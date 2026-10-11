@@ -1,6 +1,6 @@
 # Alpine Linux Server Setup & Maintenance Ansible Playbook
 
-Questo repository contiene un playbook Ansible completo e modulare per la configurazione iniziale, l'hardening e la manutenzione periodica di un server **Alpine Linux** posizionato dietro un firewall OPNsense e dedicato all'hosting di container Docker.
+Questo repository contiene un playbook Ansible completo e modulare per la configurazione iniziale, l'hardening e la manutenzione periodica di un server **Alpine Linux** posizionato dietro un firewall OPNsense.
 
 ---
 
@@ -18,7 +18,6 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 ├── tasks/
 │   ├── setup.yaml                 # Configurazione iniziale pacchetti e repository
 │   ├── hardening.yaml             # Hardening SSH e configurazione doas
-│   ├── docker.yaml                # Installazione Docker Rootless e utente svc-docker
 │   ├── clamav.yaml                # Installazione ClamAV, clamd daemon e Cron
 │   └── update.yaml                # Aggiornamenti periodici di sistema
 └── templates/
@@ -55,22 +54,17 @@ ansible-vault decrypt vars/vault.yml
    - Privilegi elevati via `doas` invece del pesante `sudo`.
    - Accesso SSH limitato: disabilitato il login `root` diretto e forzata l'autenticazione tramite chiavi SSH (porta 22).
 
-2. **Docker Rootless (`svc-docker`):**
-   - Installazione di Docker, `docker-compose` e `docker-buildx`.
-   - Esecuzione di Docker in **modalità Rootless** sotto l'utente dedicato `svc-docker` con subuid/subgid mappati, garantendo massima sicurezza nel caso un container venisse compromesso.
-
-3. **ClamAV & Notifiche Telegram:**
+2. **ClamAV & Notifiche Telegram:**
    - Demone `clamd` e `freshclam` in background per l'aggiornamento continuo delle firme virus in RAM.
    - Script di scansione programmato via Cron (es. ogni settimana) configurato in `templates/clamav_scan_telegram.sh.j2`.
    - Invio automatico di un avviso formattato in Markdown su Telegram se vengono rilevate minacce.
    - Opzioni personalizzabili in `vars/main.yml`: `notify_only`, `quarantine`, oppure `remove`.
 
-4. **Integrazione con Ansible Semaphore:**
+3. **Integrazione con Ansible Semaphore:**
    - In Semaphore, aggiungi la password di Ansible Vault nelle credenziali/environment del Key Store.
    - I task utilizzano i **Tags** di Ansible per permettere l'esecuzione selettiva su Semaphore:
      - `--tags setup`: Esegue setup iniziale e pacchetti.
      - `--tags hardening`: Configura SSH e doas.
-     - `--tags docker`: Configura Docker Rootless.
      - `--tags clamav`: Configura antivirus e script notifiche Telegram.
      - `--tags update`: Esegue gli aggiornamenti di sistema e pacchetti (`apk update && apk upgrade`).
 
@@ -113,5 +107,5 @@ ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
 
 ## 🧪 Testing e Verifica dei Servizi
 
-Per la guida completa passo-passo con tutti i comandi necessari per verificare il Playbook Ansible e i componenti del server Alpine Linux (Doas, SSH, Docker Rootless, ClamAV e test notifiche Telegram con firma EICAR), fai riferimento a:
+Per la guida completa passo-passo con tutti i comandi necessari per verificare il Playbook Ansible e i componenti del server Alpine Linux (Doas, SSH, ClamAV e test notifiche Telegram con firma EICAR), fai riferimento a:
 👉 **[verify.md](verify.md)**

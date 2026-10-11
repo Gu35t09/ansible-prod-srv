@@ -14,16 +14,11 @@ ssh_port: 22
 ssh_permit_root_login: "no"
 ssh_password_authentication: "no"
 
-# --- Configurazione Docker Rootless ---
-docker_user: "svc-docker"
-docker_user_uid: 1001
-docker_user_gid: 1001
-
 # --- Configurazione ClamAV & Notifiche Telegram ---
 clamav_enabled: true
 clamav_scan_schedule_cron: "0 2 * * 0"  # Ogni domenica alle 02:00 (formato Cron: Min Ore GiornoMese Mese GiornoSettimana)
 clamav_scan_paths:
-  - "/home/svc-docker"
+  - "/home/{{ admin_user }}"
   - "/etc"
   - "/var"
 

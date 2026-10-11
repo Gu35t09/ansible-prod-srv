@@ -34,11 +34,6 @@
         - security
         - ssh
 
-    - name: Installazione e configurazione Docker Rootless
-      ansible.builtin.include_tasks: tasks/docker.yaml
-      tags:
-        - docker
-
     - name: Installazione, configurazione ClamAV e notifiche Telegram
       ansible.builtin.include_tasks: tasks/clamav.yaml
       tags:

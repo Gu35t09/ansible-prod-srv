@@ -1,6 +1,6 @@
 # 🧪 Guida di Verifica e Testing del Playbook Ansible e del Server Alpine Linux
 
-Questa guida fornisce una procedura passo-passo con i comandi esatti da eseguire per verificare il corretto funzionamento dell'intero sistema: dalla validazione del Playbook Ansible fino al test dei singoli servizi configurati sul server **Alpine Linux** (Doas, SSH, Docker Rootless, ClamAV e notifiche Telegram).
+Questa guida fornisce una procedura passo-passo con i comandi esatti da eseguire per verificare il corretto funzionamento dell'intero sistema: dalla validazione del Playbook Ansible fino al test dei singoli servizi configurati sul server **Alpine Linux** (Doas, SSH, ClamAV e notifiche Telegram).
 
 ---
 
@@ -8,9 +8,8 @@ Questa guida fornisce una procedura passo-passo con i comandi esatti da eseguire
 1. [Verifica del Playbook Ansible (Da locale / Controller)](#1-verifica-del-playbook-ansible-da-locale--controller)
 2. [Verifica Accesso SSH e Elevazione Privilegi Doas](#2-verifica-accesso-ssh-e-elevazione-privilegi-doas)
 3. [Verifica Hardening OpenSSH](#3-verifica-hardening-openssh)
-4. [Verifica Docker Rootless (`svc-docker`)](#4-verifica-docker-rootless-svc-docker)
-5. [Verifica ClamAV e Demoni (`clamd`, `freshclam`)](#5-verifica-clamav-e-demoni-clamd-freshclam)
-6. [Test Notifiche Telegram con File di Test Malware (EICAR)](#6-test-notifiche-telegram-con-file-di-test-malware-eicar)
+4. [Verifica ClamAV e Demoni (`clamd`, `freshclam`)](#4-verifica-clamav-e-demoni-clamd-freshclam)
+5. [Test Notifiche Telegram con File di Test Malware (EICAR)](#5-test-notifiche-telegram-con-file-di-test-malware-eicar)
 
 ---
 
@@ -35,7 +34,7 @@ ansible-playbook -i inventory.ini main.yml --check --ask-vault-pass
 ```
 
 ### 1.3 Esecuzione di Tag Specifici
-Se desideri testare solo un modulo specifico (es. solo ClamAV o solo Docker):
+Se desideri testare solo un modulo specifico (es. solo ClamAV):
 
 ```bash
 # Esempio: Esecuzione del solo tag clamav
@@ -89,62 +88,9 @@ PubkeyAuthentication yes
 
 ---
 
-## 4. Verifica Docker Rootless (`svc-docker`)
+## 4. Verifica ClamAV e Demoni (`clamd`, `freshclam`)
 
-### 4.1 Verifica Creazione Utente e SubUID/SubGID
-Verifica che l'utente `svc-docker` esista e che i range di SubUID/SubGID siano configurati correttamente:
-
-```bash
-id svc-docker
-cat /etc/subuid
-cat /etc/subgid
-```
-**Output atteso:**
-Presenza delle righe `svc-docker:100000:65536` nei file `/etc/subuid` e `/etc/subgid`.
-
-### 4.2 Verifica del Servizio OpenRC per Docker Rootless
-Verifica lo stato del servizio `docker-rootless`:
-
-```bash
-doas rc-service docker-rootless status
-```
-**Output atteso:**
-`status: started`
-
-### 4.3 Test Esecuzione Container Docker come Utente `svc-docker`
-Passa all'utente `svc-docker` ed esegui un container di test:
-
-```bash
-# Passa all'utente svc-docker caricando il suo ambiente (.bashrc)
-doas -u svc-docker -i bash
-
-# Assicurati che le variabili d'ambiente Rootless siano impostate
-export XDG_RUNTIME_DIR="/run/user/1001"
-export DOCKER_HOST="unix:///run/user/1001/docker.sock"
-
-# Verifica le informazioni di Docker Rootless
-docker info
-
-# Esegui un container di test
-docker run --rm hello-world
-
-# Esci dalla shell dell'utente svc-docker
-exit
-```
-**Output atteso:**
-Il messaggio `Hello from Docker!` confermerà che il demone Docker Rootless è perfettamente operativo.
-
-> 💡 **Nota Risoluzione Problemi Docker Rootless:**
-> Se `docker info` restituisce l'errore `failed to connect to the docker API at unix:///var/run/docker.sock`, significa che `DOCKER_HOST` non è impostato sulla socket Rootless dell'utente (`unix:///run/user/1001/docker.sock`). Inoltre, se il servizio OpenRC `docker-rootless` non risulta avviato, eseguibile da root:
-> ```bash
-> doas rc-service docker-rootless restart
-> ```
-
----
-
-## 5. Verifica ClamAV e Demoni (`clamd`, `freshclam`)
-
-### 5.1 Verifica dello Stato dei Servizi ClamAV
+### 4.1 Verifica dello Stato dei Servizi ClamAV
 ```bash
 doas rc-service clamd status
 doas rc-service freshclam status
@@ -152,7 +98,7 @@ doas rc-service freshclam status
 **Output atteso:**
 Entrambi i servizi devono risultare in stato `started`.
 
-### 5.2 Verifica del Cron Job per la Scansione Schedulata
+### 4.2 Verifica del Cron Job per la Scansione Schedulata
 Verifica che il job Cron sia presente nel crontab di root:
 
 ```bash
@@ -162,7 +108,7 @@ doas crontab -l
 Presenza della riga:
 `0 2 * * 0 /usr/local/bin/clamav_scan_telegram.sh > /dev/null 2>&1`
 
-### 5.3 Esecuzione Manuale dello Script di Scansione
+### 4.3 Esecuzione Manuale dello Script di Scansione
 Esegui manualmente lo script generato da Ansible:
 
 ```bash
@@ -179,18 +125,18 @@ Log dettagliato della scansione terminante con `Scansione completata. Nessuna mi
 
 ---
 
-## 6. Test Notifiche Telegram con File di Test Malware (EICAR)
+## 5. Test Notifiche Telegram con File di Test Malware (EICAR)
 
 Per verificare che lo script rilevi correttamente le minacce e invii l'avviso formattato su Telegram, utilizziamo la stringa di test standard **EICAR** (un file di test innocuo riconosciuto da tutti gli antivirus).
 
-### 6.1 Creazione del File di Test EICAR
-Crea un file temporaneo con la firma EICAR in un percorso scansionato da ClamAV (es. `/home/svc-docker`):
+### 5.1 Creazione del File di Test EICAR
+Crea un file temporaneo con la firma EICAR in un percorso scansionato da ClamAV (es. `/home/v`):
 
 ```bash
-echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | doas tee /home/svc-docker/eicar.com
+echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | doas tee /home/v/eicar.com
 ```
 
-### 6.2 Esecuzione della Scansione e Verifica Notifica Telegram
+### 5.2 Esecuzione della Scansione e Verifica Notifica Telegram
 Lancia lo script di scansione:
 
 ```bash
@@ -206,16 +152,16 @@ doas /usr/local/bin/clamav_scan_telegram.sh
 > 🖥️ **Server:** `alpine-node-01`
 > 🦠 **File Infetti Rilevati:** `1`
 > 🛠️ **Azione Eseguita:** `notify_only`
-> 📁 **Percorsi Scansionati:** `/home/svc-docker /etc /var`
+> 📁 **Percorsi Scansionati:** `/home/v /etc /var`
 >
 > 📋 **Dettagli Report:**
 > ... `Eicar-Signature FOUND` ...
 
-### 6.3 Pulizia del File di Test
+### 5.3 Pulizia del File di Test
 Al termine della verifica, rimuovi il file di test EICAR:
 
 ```bash
-doas rm -f /home/svc-docker/eicar.com
+doas rm -f /home/v/eicar.com
 ```
 
 Verifica che rieseguendo la scansione non vengano più rilevate minacce:
