@@ -19,6 +19,7 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 │   ├── setup.yaml                 # Configurazione iniziale pacchetti e repository
 │   ├── hardening.yaml             # Hardening SSH e configurazione doas
 │   ├── clamav.yaml                # Installazione ClamAV, clamd daemon e Cron
+│   ├── docker.yaml                # Installazione e configurazione Docker Rootless (svc-docker)
 │   └── update.yaml                # Aggiornamenti periodici di sistema
 └── templates/
     └── clamav_scan_telegram.sh.j2 # Template script di scansione con notifiche Telegram
@@ -66,6 +67,7 @@ ansible-vault decrypt vars/vault.yml
      - `--tags setup`: Esegue setup iniziale e pacchetti.
      - `--tags hardening`: Configura SSH e doas.
      - `--tags clamav`: Configura antivirus e script notifiche Telegram.
+     - `--tags docker`: Configura Docker in modalità Rootless per l'utente `svc-docker`.
      - `--tags update`: Esegue gli aggiornamenti di sistema e pacchetti (`apk update && apk upgrade`).
 
 ---

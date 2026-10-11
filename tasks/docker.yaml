@@ -1,0 +1,149 @@
+---
+# ==============================================================================
+# TASK: INSTALLAZIONE E CONFIGURAZIONE DOCKER ROOTLESS (Alpine Linux)
+# ==============================================================================
+
+- name: Installare i pacchetti e i tool necessari per Docker e Rootless mode
+  community.general.apk:
+    name:
+      - shadow-uidmap
+      - fuse-overlayfs
+      - iproute2
+      - docker
+      - docker-cli-compose
+    state: present
+
+- name: Abilitare cgroups v2 in /etc/rc.conf
+  ansible.builtin.lineinfile:
+    path: /etc/rc.conf
+    regexp: '^#?\s*rc_cgroup_mode=.*'
+    line: 'rc_cgroup_mode="unified"'
+    state: present
+
+- name: Abilitare e avviare il servizio cgroups
+  ansible.builtin.service:
+    name: cgroups
+    enabled: true
+    state: started
+
+- name: Caricare il modulo kernel tun
+  community.general.modprobe:
+    name: tun
+    state: present
+
+- name: Assicurarsi che il modulo tun venga caricato all'avvio
+  ansible.builtin.lineinfile:
+    path: /etc/modules
+    line: 'tun'
+    state: present
+
+- name: Caricare il modulo kernel ip_tables
+  community.general.modprobe:
+    name: ip_tables
+    state: present
+
+- name: Assicurarsi che il modulo ip_tables venga caricato all'avvio
+  ansible.builtin.lineinfile:
+    path: /etc/modules
+    line: 'ip_tables'
+    state: present
+
+- name: Creare il gruppo dedicato per Docker
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Creare l'utente dedicato svc-docker senza permessi di root e senza accesso SSH diretto
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: true
+    shell: /sbin/nologin
+    create_home: true
+    home: "/home/{{ docker_user }}"
+    state: present
+
+- name: Configurare DenyUsers in sshd_config per impedire l'accesso SSH a svc-docker
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*DenyUsers\s+.*'
+    line: "DenyUsers {{ docker_user }}"
+    state: present
+  notify: Riavviare sshd per applicare la restrizione utente
+
+- name: Mappare subuid per l'utente svc-docker
+  ansible.builtin.lineinfile:
+    path: /etc/subuid
+    regexp: "^{{ docker_user }}:.*"
+    line: "{{ docker_user }}:100000:65536"
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Mappare subgid per l'utente svc-docker
+  ansible.builtin.lineinfile:
+    path: /etc/subgid
+    regexp: "^{{ docker_user }}:.*"
+    line: "{{ docker_user }}:100000:65536"
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Abilitare l'uso delle porte non privilegiate (< 1024) in sysctl.conf
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ docker_unprivileged_port_start | string }}"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: true
+
+- name: Eseguire l'installer di Docker Rootless come utente svc-docker
+  ansible.builtin.shell: |
+    curl -fsSL https://get.docker.com/rootless | sh
+  args:
+    executable: /bin/sh
+    creates: "/home/{{ docker_user }}/bin/dockerd-rootless.sh"
+  become: true
+  become_user: "{{ docker_user }}"
+
+- name: Creare lo script di init OpenRC per Docker Rootless
+  ansible.builtin.copy:
+    dest: /etc/init.d/docker-rootless
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/sbin/openrc-run
+
+      name=$RC_SVCNAME
+      description="Docker Application Container Engine (Rootless)"
+      supervisor="supervise-daemon"
+      command="/home/{{ docker_user }}/bin/dockerd-rootless.sh"
+      command_args=""
+      command_user="{{ docker_user }}"
+      supervise_daemon_args=" -e PATH=\"/home/{{ docker_user }}/bin:/sbin:/usr/sbin:$PATH\" -e HOME=\"/home/{{ docker_user }}\" -e XDG_RUNTIME_DIR=\"/home/{{ docker_user }}/.docker/run\""
+
+      reload() {
+          ebegin "Reloading $RC_SVCNAME"
+          /bin/kill -s HUP $MAINPID
+          eend $?
+      }
+
+- name: Abilitare e avviare il servizio docker-rootless in OpenRC
+  ansible.builtin.service:
+    name: docker-rootless
+    enabled: true
+    state: started
+
+- name: Configurare il file .profile per l'utente svc-docker
+  ansible.builtin.copy:
+    dest: "/home/{{ docker_user }}/.profile"
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: '0644'
+    content: |
+      export XDG_RUNTIME_DIR="$HOME/.docker/run"
+      export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
+      export PATH="/home/{{ docker_user }}/bin:/sbin:/usr/sbin:$PATH"
