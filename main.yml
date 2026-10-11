@@ -40,6 +40,12 @@
         - clamav
         - antivirus
 
+    - name: Installazione e configurazione Docker Rootless
+      ansible.builtin.include_tasks: tasks/docker.yaml
+      tags:
+        - docker
+        - containers
+
     - name: Aggiornamento del sistema e dei pacchetti
       ansible.builtin.include_tasks: tasks/update.yaml
       tags:
