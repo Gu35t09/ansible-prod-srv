@@ -9,8 +9,7 @@ Questa guida fornisce una procedura passo-passo con i comandi esatti da eseguire
 2. [Verifica Accesso SSH e Elevazione Privilegi Doas](#2-verifica-accesso-ssh-e-elevazione-privilegi-doas)
 3. [Verifica Hardening OpenSSH](#3-verifica-hardening-openssh)
 4. [Verifica ClamAV e Demoni (`clamd`, `freshclam`)](#4-verifica-clamav-e-demoni-clamd-freshclam)
-5. [Verifica Docker Rootless (`svc-docker`)](#5-verifica-docker-rootless-svc-docker)
-6. [Test Notifiche Telegram con File di Test Malware (EICAR)](#6-test-notifiche-telegram-con-file-di-test-malware-eicar)
+5. [Test Notifiche Telegram con File di Test Malware (EICAR)](#5-test-notifiche-telegram-con-file-di-test-malware-eicar)
 
 ---
 
@@ -132,36 +131,7 @@ doas cat $(ls -t /var/log/clamav/scan_*.log | head -n 1)
 
 ---
 
-## 5. Verifica Docker Rootless (`svc-docker`)
-
-### 5.1 Verifica dello Stato del Servizio OpenRC
-```bash
-doas rc-service docker-rootless status
-```
-**Output atteso:**
-`status: started`
-
-### 5.2 Verifica del blocco SSH per `svc-docker`
-Tentando la connessione SSH con `svc-docker`:
-```bash
-ssh svc-docker@<IP_DEL_SERVER>
-```
-**Output atteso:**
-`Permission denied (publickey).` oppure disconnessione immediata a causa di `DenyUsers` e shell `/sbin/nologin`.
-
-### 5.3 Test Esecuzione Container Docker via Doas
-Esegui comandi Docker passando all'utente `svc-docker`:
-```bash
-doas -u svc-docker -s
-docker ps
-docker run --rm hello-world
-```
-**Output atteso:**
-Il container `hello-world` viene scaricato ed eseguito correttamente in modalità rootless senza permessi di root.
-
----
-
-## 6. Test Notifiche Telegram con File di Test Malware (EICAR)
+## 5. Test Notifiche Telegram con File di Test Malware (EICAR)
 
 Per verificare che lo script rilevi correttamente le minacce e invii l'avviso formattato su Telegram, utilizziamo la stringa di test standard **EICAR** (un file di test innocuo riconosciuto da tutti gli antivirus).
 

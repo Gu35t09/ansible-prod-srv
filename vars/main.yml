@@ -36,7 +36,3 @@ telegram_chat_id: "{{ vault_telegram_chat_id }}"
 # - "remove"      : Elimina automaticamente i file infetti ed invia la notifica
 clamav_action_on_detect: "quarantine"
 clamav_quarantine_dir: "/var/log/clamav/quarantine"
-
-# --- Configurazione Docker Rootless ---
-docker_user: "svc-docker"
-docker_unprivileged_port_start: 53
