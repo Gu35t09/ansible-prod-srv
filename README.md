@@ -12,7 +12,9 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 ├── inventory.ini                  # Inventario dei server Alpine target
 ├── main.yml                       # Playbook principale
 ├── vars/
-│   └── main.yml                   # Variabili di configurazione (Utenti, SSH, Telegram Bot)
+│   ├── main.yml                   # Variabili di configurazione generale
+│   ├── vault.yml                  # Variabili riservate/sensibili gestite con Ansible Vault
+│   └── vault.yml.example          # Esempio di file vault in chiaro
 ├── tasks/
 │   ├── setup.yaml                 # Configurazione iniziale pacchetti e repository
 │   ├── hardening.yaml             # Hardening SSH e configurazione doas
@@ -21,6 +23,27 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 │   └── update.yaml                # Aggiornamenti periodici di sistema
 └── templates/
     └── clamav_scan_telegram.sh.j2 # Template script di scansione con notifiche Telegram
+```
+
+---
+
+## 🔐 Gestione Variabili Sensibili con Ansible Vault
+
+I dati riservati come **Bot Token Telegram** e **Chat ID** sono memorizzati nel file `vars/vault.yml`.
+
+### Criptare il file vault:
+```bash
+ansible-vault encrypt vars/vault.yml
+```
+
+### Modificare un file vault criptato:
+```bash
+ansible-vault edit vars/vault.yml
+```
+
+### Decriptare temporaneamente per ispezione:
+```bash
+ansible-vault decrypt vars/vault.yml
 ```
 
 ---
@@ -43,6 +66,7 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
    - Opzioni personalizzabili in `vars/main.yml`: `notify_only`, `quarantine`, oppure `remove`.
 
 4. **Integrazione con Ansible Semaphore:**
+   - In Semaphore, aggiungi la password di Ansible Vault nelle credenziali/environment del Key Store.
    - I task utilizzano i **Tags** di Ansible per permettere l'esecuzione selettiva su Semaphore:
      - `--tags setup`: Esegue setup iniziale e pacchetti.
      - `--tags hardening`: Configura SSH e doas.
@@ -54,10 +78,12 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 
 ## 🛠️ Come Usare il Playbook
 
-### 1. Configurazione Variabili
-Modifica il file `vars/main.yml`:
-- Inserisci le tue chiavi SSH pubbliche in `admin_ssh_keys`.
-- Configura il `telegram_bot_token` e il `telegram_chat_id` per le notifiche ClamAV.
+### 1. Configurazione Variabili e Vault
+- Modifica `vars/main.yml` (es. `admin_ssh_keys`).
+- Configura `vars/vault.yml` con il tuo Token Telegram e Chat ID, quindi cripta il file:
+  ```bash
+  ansible-vault encrypt vars/vault.yml
+  ```
 
 ### 2. Configurazione Inventario
 Aggiorna `inventory.ini` con l'indirizzo IP del tuo server Alpine:
@@ -68,12 +94,17 @@ alpine-node-01 ansible_host=192.168.1.100 ansible_user=admin
 
 ### 3. Esecuzione via CLI
 
-**Esecuzione completa (setup, hardening, docker, clamav):**
+**Esecuzione completa chiedendo la password di Ansible Vault:**
 ```bash
-ansible-playbook -i inventory.ini main.yml
+ansible-playbook -i inventory.ini main.yml --ask-vault-pass
 ```
 
-**Esecuzione solo degli aggiornamenti periodici (es. schedulata su Semaphore):**
+**Esecuzione usando un file password Vault (utile in automazioni/Semaphore):**
 ```bash
-ansible-playbook -i inventory.ini main.yml --tags update
+ansible-playbook -i inventory.ini main.yml --vault-password-file .vault_pass
+```
+
+**Esecuzione solo degli aggiornamenti periodici:**
+```bash
+ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
 ```

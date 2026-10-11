@@ -3,10 +3,14 @@
 # PLAYBOOK PRINCIPALE PER CONFIGURAZIONE E MANUTENZIONE ALPINE LINUX
 # ==============================================================================
 # Uso con Semaphore / CLI:
-# - Esecuzione completa (Setup iniziale, Hardening, Docker, ClamAV):
-#     ansible-playbook -i inventory.ini main.yml
+# - Esecuzione completa con Ansible Vault:
+#     ansible-playbook -i inventory.ini main.yml --ask-vault-pass
+#
+# - Esecuzione usando file password vault (es. su Semaphore / CI/CD):
+#     ansible-playbook -i inventory.ini main.yml --vault-password-file .vault_pass
+#
 # - Esecuzione solo aggiornamenti di sistema (per Job periodico Semaphore):
-#     ansible-playbook -i inventory.ini main.yml --tags update
+#     ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
 # ==============================================================================
 
 - name: Configuratore e Manutentore Alpine Server
@@ -14,6 +18,7 @@
   gather_facts: true
   vars_files:
     - vars/main.yml
+    - vars/vault.yml
 
   tasks:
     - name: Inizio configurazione di base ed aggiornamenti
