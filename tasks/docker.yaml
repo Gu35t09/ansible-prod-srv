@@ -18,7 +18,7 @@
     state: present
 
 - name: Abilitare il modulo kernel tun/tap e fuse se necessari per networking rootless
-  community.general.kernel_module:
+  ansible.builtin.modprobe:
     name: "{{ item }}"
     state: present
   loop:
