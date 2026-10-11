@@ -16,11 +16,14 @@ ssh_password_authentication: "no"
 
 # --- Configurazione ClamAV & Notifiche Telegram ---
 clamav_enabled: true
-clamav_scan_schedule_cron: "0 2 * * 0"  # Ogni domenica alle 02:00 (formato Cron: Min Ore GiornoMese Mese GiornoSettimana)
+clamav_scan_schedule_cron: "0 0 * * *"  # Ogni giorno ore 00:00 (formato Cron: Min Ore GiornoMese Mese GiornoSettimana)
 clamav_scan_paths:
   - "/home/{{ admin_user }}"
   - "/etc"
   - "/var"
+  - "/srv"
+  - "/var"
+  - "/tmp"
 
 # Notifiche Telegram per ClamAV (riferite alle variabili Vault definite in vars/vault.yml)
 telegram_notifications_enabled: true
@@ -31,5 +34,5 @@ telegram_chat_id: "{{ vault_telegram_chat_id }}"
 # - "notify_only" : Invia soltanto la notifica Telegram con il report (raccomandato per evitare falsi positivi bloccanti)
 # - "quarantine"  : Sposta i file infetti nella cartella di quarantena ed invia la notifica
 # - "remove"      : Elimina automaticamente i file infetti ed invia la notifica
-clamav_action_on_detect: "notify_only"
+clamav_action_on_detect: "quarantine"
 clamav_quarantine_dir: "/var/log/clamav/quarantine"
