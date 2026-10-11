@@ -115,11 +115,12 @@ doas rc-service docker-rootless status
 Passa all'utente `svc-docker` ed esegui un container di test:
 
 ```bash
-# Passa all'utente svc-docker
-doas -u svc-docker bash
+# Passa all'utente svc-docker caricando il suo ambiente (.bashrc)
+doas -u svc-docker -i bash
 
-# Imposta la variabile d'ambiente XDG_RUNTIME_DIR se non definita
+# Assicurati che le variabili d'ambiente Rootless siano impostate
 export XDG_RUNTIME_DIR="/run/user/1001"
+export DOCKER_HOST="unix:///run/user/1001/docker.sock"
 
 # Verifica le informazioni di Docker Rootless
 docker info
@@ -132,6 +133,12 @@ exit
 ```
 **Output atteso:**
 Il messaggio `Hello from Docker!` confermerà che il demone Docker Rootless è perfettamente operativo.
+
+> 💡 **Nota Risoluzione Problemi Docker Rootless:**
+> Se `docker info` restituisce l'errore `failed to connect to the docker API at unix:///var/run/docker.sock`, significa che `DOCKER_HOST` non è impostato sulla socket Rootless dell'utente (`unix:///run/user/1001/docker.sock`). Inoltre, se il servizio OpenRC `docker-rootless` non risulta avviato, eseguibile da root:
+> ```bash
+> doas rc-service docker-rootless restart
+> ```
 
 ---
 
