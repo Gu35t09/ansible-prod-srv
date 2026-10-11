@@ -4,10 +4,10 @@
 # ==============================================================================
 
 # --- Configurazione Utente Amministrativo (Sudoer / Doas) ---
-admin_user: "admin"
+admin_user: "v"
 # Inserisci qui le chiavi SSH pubbliche autorizzate ad accedere come utente admin
 admin_ssh_keys:
-  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForAdminUser admin@example.com"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAn6fwLJzRJjFsKK5LVGNTIxrYa9yCg10XO0rQL9JIuw mattia@nixos"
 
 # --- Hardening SSH ---
 ssh_port: 22
