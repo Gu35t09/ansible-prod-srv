@@ -57,7 +57,7 @@ ansible-vault decrypt vars/vault.yml
 2. **ClamAV & Notifiche Telegram:**
    - Demone `clamd` e `freshclam` in background per l'aggiornamento continuo delle firme virus in RAM.
    - Script di scansione programmato via Cron (es. ogni settimana) configurato in `templates/clamav_scan_telegram.sh.j2`.
-   - Invio automatico di un avviso formattato in Markdown su Telegram se vengono rilevate minacce.
+   - Invio automatico di una notifica formattata in Markdown su Telegram al termine di ogni scansione, indicando chiaramente l'esito nell'oggetto (`✅ SCANSIONE COMPLETATA - PULITA`, `⚠️ ALLERTA MALWARE`, o `❌ ERRORE`).
    - Opzioni personalizzabili in `vars/main.yml`: `notify_only`, `quarantine`, oppure `remove`.
 
 3. **Integrazione con Ansible Semaphore:**

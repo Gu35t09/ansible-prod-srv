@@ -87,6 +87,26 @@ EOF
     send_telegram_notification "$TEXT"
 else
     echo "Scansione completata. Nessuna minaccia rilevata." >> "$LOG_FILE"
+    summary_details=$(grep -i -A 10 "KNOWN VIRUSES:" "$LOG_FILE" | tail -n 10)
+    if [ -z "$summary_details" ]; then
+        summary_details=$(tail -n 10 "$LOG_FILE")
+    fi
+
+    TEXT=$(cat <<EOF
+✅ *SCANSIONE CLAMAV COMPLETATA - PULITA*
+
+🖥️ *Server:* \`${HOSTNAME}\`
+🦠 *File Infetti Rilevati:* \`0\`
+📁 *Percorsi Scansionati:* \`${SCAN_PATHS}\`
+
+📋 *Dettagli Report:*
+\`\`\`
+${summary_details}
+\`\`\`
+EOF
+)
+
+    send_telegram_notification "$TEXT"
 fi
 
 exit $EXIT_CODE

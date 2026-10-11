@@ -121,7 +121,13 @@ Verifica il file di log appena generato in `/var/log/clamav/`:
 doas cat $(ls -t /var/log/clamav/scan_*.log | head -n 1)
 ```
 **Output atteso:**
-Log dettagliato della scansione terminante con `Scansione completata. Nessuna minaccia rilevata.`
+1. Log dettagliato della scansione terminante con `Scansione completata. Nessuna minaccia rilevata.`
+2. Ricezione di una notifica su Telegram con l'esito:
+   > ✅ **SCANSIONE CLAMAV COMPLETATA - PULITA**
+   >
+   > 🖥️ **Server:** `alpine-node-01`
+   > 🦠 **File Infetti Rilevati:** `0`
+   > 📁 **Percorsi Scansionati:** `/home/v /etc /var`
 
 ---
 
