@@ -1,0 +1,37 @@
+---
+# ==============================================================================
+# TASK: CONFIGURAZIONE INIZIALE E PACCHETTI BASE (Alpine Linux)
+# ==============================================================================
+
+- name: Assicurarsi che i repository community e main di Alpine siano abilitati
+  ansible.builtin.lineinfile:
+    path: /etc/apk/repositories
+    regexp: '^#?\s*(http.*/v\d+\.\d+/community)$'
+    line: '\1'
+    backrefs: true
+
+- name: Aggiornare l'indice dei pacchetti apk
+  community.general.apk:
+    update_cache: true
+
+- name: Installare i pacchetti base di sistema essenziali
+  community.general.apk:
+    name:
+      - ca-certificates
+      - curl
+      - wget
+      - bash
+      - doas
+      - tzdata
+      - htop
+      - nano
+      - logrotate
+      - python3
+    state: present
+
+- name: Impostare il fuso orario di sistema su Europe/Rome
+  ansible.builtin.file:
+    src: /usr/share/zoneinfo/Europe/Rome
+    dest: /etc/localtime
+    state: link
+    force: true

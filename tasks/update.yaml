@@ -1,0 +1,27 @@
+---
+# ==============================================================================
+# TASK: AGGIORNAMENTI PERIODICI DEL SISTEMA ALPINE E PACCHETTI
+# ==============================================================================
+# Tag: update
+# Questo task è progettato per essere eseguito periodicamente tramite Semaphore
+# (o cron/schedule) senza alterare le configurazioni essenziali dei servizi.
+# ==============================================================================
+
+- name: Aggiornare l'indice dei pacchetti apk (apk update)
+  community.general.apk:
+    update_cache: true
+
+- name: Aggiornare tutti i pacchetti installati all'ultima versione disponibile (apk upgrade)
+  community.general.apk:
+    upgrade: true
+
+- name: Pulire la cache dei pacchetti apk vecchi o inutilizzati
+  ansible.builtin.command:
+    cmd: apk cache clean
+  changed_when: false
+
+- name: Riavviare il servizio ClamAV daemon se attivo dopo aggiornamenti pacchetti
+  ansible.builtin.service:
+    name: clamd
+    state: restarted
+  failed_when: false

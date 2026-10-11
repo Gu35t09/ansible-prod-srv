@@ -1,0 +1,78 @@
+#!/bin/bash
+# ==============================================================================
+# SCRIPT DI SCANSIONE CLAMAV CON NOTIFICA TELEGRAM
+# Generato automaticamente da Ansible per Alpine Linux
+# ==============================================================================
+
+BOT_TOKEN="{{ telegram_bot_token }}"
+CHAT_ID="{{ telegram_chat_id }}"
+NOTIFY_ENABLED="{{ telegram_notifications_enabled | default('true') | lower }}"
+ACTION="{{ clamav_action_on_detect | default('notify_only') }}"
+QUARANTINE_DIR="{{ clamav_quarantine_dir | default('/var/log/clamav/quarantine') }}"
+SCAN_PATHS="{{ clamav_scan_paths | join(' ') }}"
+LOG_FILE="/var/log/clamav/scan_$(date +%Y%m%d_%H%M%S).log"
+HOSTNAME=$(hostname)
+
+# Assicurarsi che la directory di log e quarantena esistano
+mkdir -p /var/log/clamav
+if [ "$ACTION" = "quarantine" ]; then
+    mkdir -p "$QUARANTINE_DIR"
+fi
+
+# Funzione per inviare messaggi su Telegram
+send_telegram_notification() {
+    local MESSAGE="$1"
+    if [ "$NOTIFY_ENABLED" = "true" ] && [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "YOUR_TELEGRAM_BOT_TOKEN_HERE" ]; then
+        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "parse_mode=Markdown" \
+            -d "text=${MESSAGE}" > /dev/null 2>&1
+    fi
+}
+
+echo "=== Inizio Scansione ClamAV su $HOSTNAME: $(date) ===" > "$LOG_FILE"
+
+# Costruzione del comando clamdscan / clamscan
+# Utilizziamo clamdscan se il daemon clamd è attivo (molto più veloce), altrimenti clamscan
+if pgrep -x "clamd" > /dev/null; then
+    SCAN_CMD="clamdscan --multiscan --fdpass"
+else
+    SCAN_CMD="clamscan -r"
+fi
+
+# Aggiunta opzioni in base all'azione configurata
+if [ "$ACTION" = "quarantine" ]; then
+    SCAN_CMD="$SCAN_CMD --move=$QUARANTINE_DIR"
+elif [ "$ACTION" = "remove" ]; then
+    SCAN_CMD="$SCAN_CMD --remove=yes"
+fi
+
+# Esecuzione dello scan
+$SCAN_CMD $SCAN_PATHS >> "$LOG_FILE" 2>&1
+EXIT_CODE=$?
+
+# Interpretazione dei codici di uscita di ClamAV:
+# 0 = Nessun virus trovato
+# 1 = Trovati file infetti / minacce
+# >1 = Si è verificato un errore durante lo scan
+
+if [ $EXIT_CODE -eq 1 ]; then
+    INFECTED_COUNT=$(grep -i "Infected files:" "$LOG_FILE" | awk '{print $3}')
+    summary_details=$(grep -A 10 "KNOWN VIRUSES:" "$LOG_FILE" | tail -n 10)
+
+    TEXT="⚠️ *ALLERTA MALWARE CLAMAV* ⚠️%0A%0A"
+    TEXT="${TEXT}🖥️ *Server:* \`${HOSTNAME}\`%0A"
+    TEXT="${TEXT}🦠 *File Infetti Rilevati:* \`${INFECTED_COUNT}\`%0A"
+    TEXT="${TEXT}🛠️ *Azione Eseguita:* \`${ACTION}\`%0A"
+    TEXT="${TEXT}📁 *Percorsi Scansionati:* \`${SCAN_PATHS}\`%0A%0A"
+    TEXT="${TEXT}📋 *Dettagli Report:*%0A\`\`\`%0A${summary_details}%0A\`\`\`"
+
+    send_telegram_notification "$TEXT"
+elif [ $EXIT_CODE -gt 1 ]; then
+    TEXT="❌ *ERRORE SCANSIONE CLAMAV*%0A%0ASi è verificato un errore durante la scansione programmata sul server \`${HOSTNAME}\`.%0AControllare il log: \`${LOG_FILE}\`"
+    send_telegram_notification "$TEXT"
+else
+    echo "Scansione completata. Nessuna minaccia rilevata." >> "$LOG_FILE"
+fi
+
+exit $EXIT_CODE

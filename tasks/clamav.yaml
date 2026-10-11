@@ -1,0 +1,68 @@
+---
+# ==============================================================================
+# TASK: INSTALLAZIONE E CONFIGURAZIONE CLAMAV, CLAMD ED AGGIORNATORE FRESHCLAM
+# ==============================================================================
+
+- name: Installare ClamAV, demone Clamd, Freshclam e dipendenze
+  community.general.apk:
+    name:
+      - clamav
+      - clamav-daemon
+      - clamav-libunrar
+      - freshclam
+      - curl
+      - cronie
+    state: present
+
+- name: Assicurarsi che le directory di log e runtime per ClamAV esistano con i permessi corretti
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: clamav
+    group: clamav
+    mode: '0755'
+  loop:
+    - /var/log/clamav
+    - /var/lib/clamav
+    - /run/clamav
+    - "{{ clamav_quarantine_dir }}"
+
+- name: Aggiornare le definizioni dei virus con freshclam (primo scaricamento database)
+  ansible.builtin.command:
+    cmd: freshclam
+  register: freshclam_init
+  failed_when: false
+  changed_when: freshclam_init.rc == 0
+
+- name: Abilitare ed avviare il servizio del demone freshclam (aggiornamento automatico firme)
+  ansible.builtin.service:
+    name: freshclam
+    enabled: true
+    state: started
+  failed_when: false
+
+- name: Abilitare ed avviare il servizio del demone ClamAV (clamd)
+  ansible.builtin.service:
+    name: clamd
+    enabled: true
+    state: started
+  failed_when: false
+
+- name: Creare lo script di scansione ClamAV con notifiche Telegram da template J2
+  ansible.builtin.template:
+    src: templates/clamav_scan_telegram.sh.j2
+    dest: /usr/local/bin/clamav_scan_telegram.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configurare il Cron job per la scansione schedulata con notifiche Telegram
+  ansible.builtin.cron:
+    name: "Scansione periodica ClamAV con notifiche Telegram"
+    minute: "{{ clamav_scan_schedule_cron.split(' ')[0] }}"
+    hour: "{{ clamav_scan_schedule_cron.split(' ')[1] }}"
+    day: "{{ clamav_scan_schedule_cron.split(' ')[2] }}"
+    month: "{{ clamav_scan_schedule_cron.split(' ')[3] }}"
+    weekday: "{{ clamav_scan_schedule_cron.split(' ')[4] }}"
+    job: "/usr/local/bin/clamav_scan_telegram.sh > /dev/null 2>&1"
+    state: "{{ 'present' if clamav_enabled else 'absent' }}"

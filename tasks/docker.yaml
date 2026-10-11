@@ -1,0 +1,117 @@
+---
+# ==============================================================================
+# TASK: INSTALLAZIONE E CONFIGURAZIONE DOCKER IN MODALITÀ ROOTLESS
+# ==============================================================================
+
+- name: Installare i pacchetti necessari per Docker e Rootless execution
+  community.general.apk:
+    name:
+      - docker
+      - docker-cli
+      - docker-compose
+      - docker-cli-buildx
+      - rootlesskit
+      - slirp4netns
+      - shadow-subids
+      - iproute2
+      - dbus
+    state: present
+
+- name: Abilitare il modulo kernel tun/tap e fuse se necessari per networking rootless
+  community.general.kernel_module:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - tun
+    - tap
+  failed_when: false
+
+- name: Creare il gruppo per utente docker dedicato
+  ansible.builtin.group:
+    name: "{{ docker_user }}"
+    gid: "{{ docker_user_gid }}"
+    state: present
+
+- name: Creare l'utente dedicato per l'esecuzione Rootless di Docker
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    uid: "{{ docker_user_uid }}"
+    group: "{{ docker_user }}"
+    shell: /bin/bash
+    home: "/home/{{ docker_user }}"
+    create_home: true
+    state: present
+
+- name: Configurare i range di subuid per l'utente docker
+  ansible.builtin.lineinfile:
+    path: /etc/subuid
+    regexp: "^{{ docker_user }}:"
+    line: "{{ docker_user }}:100000:65536"
+    create: true
+    mode: '0644'
+
+- name: Configurare i range di subgid per l'utente docker
+  ansible.builtin.lineinfile:
+    path: /etc/subgid
+    regexp: "^{{ docker_user }}:"
+    line: "{{ docker_user }}:100000:65536"
+    create: true
+    mode: '0644'
+
+- name: Configurare sysctl per consentire agli utenti non-root di aprire porte e usare unprivileged ping
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  loop:
+    - { key: 'net.ipv4.ip_unprivileged_port_start', value: '80' }
+    - { key: 'net.ipv4.ping_group_range', value: '0 2147483647' }
+  failed_when: false
+
+- name: Eseguire lo script di installazione rootless Docker per l'utente dedicato
+  ansible.builtin.command:
+    cmd: "dockerd-rootless-setuptool.sh install"
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    HOME: "/home/{{ docker_user }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ docker_user_uid }}"
+  register: docker_rootless_install
+  failed_when: false
+  changed_when: docker_rootless_install.rc == 0
+
+- name: Creare lo script OpenRC di servizio per la gestione di Rootless Docker
+  ansible.builtin.copy:
+    dest: /etc/init.d/docker-rootless
+    mode: '0755'
+    content: |
+      #!/sbin/openrc-run
+      description="Docker Rootless Service for {{ docker_user }}"
+
+      USER="{{ docker_user }}"
+      HOME="/home/${USER}"
+      export HOME
+      export XDG_RUNTIME_DIR="/run/user/{{ docker_user_uid }}"
+      export PATH="${HOME}/bin:/usr/bin:/bin"
+
+      command="${HOME}/bin/dockerd-rootless.sh"
+      command_background="yes"
+      pidfile="/run/docker-rootless-${USER}.pid"
+
+      depend() {
+          need net localmount
+          after firewall
+      }
+
+      start_pre() {
+          checkpath -d -m 0700 -o ${USER}:${USER} "${XDG_RUNTIME_DIR}"
+      }
+
+- name: Abilitare ed avviare il servizio docker-rootless al boot
+  ansible.builtin.service:
+    name: docker-rootless
+    enabled: true
+    state: started
+  failed_when: false

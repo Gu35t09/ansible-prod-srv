@@ -1,0 +1,60 @@
+---
+# ==============================================================================
+# TASK: HARDENING SISTEMA, UTENTI, DOAS ED SSH
+# ==============================================================================
+
+- name: Creare il gruppo wheel se non esiste
+  ansible.builtin.group:
+    name: wheel
+    state: present
+
+- name: Configurare doas per permettere ai membri del gruppo wheel l'elevazione dei privilegi senza password
+  ansible.builtin.copy:
+    dest: /etc/doas.d/doas.conf
+    content: |
+      # Configurazione doas per amministrazione del server
+      permit nopass :wheel
+      permit nopass root
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Creare l'utente amministrativo
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: wheel
+    append: true
+    shell: /bin/bash
+    state: present
+
+- name: Inserire le chiavi SSH pubbliche autorizzate per l'utente amministrativo
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    state: present
+    key: "{{ item }}"
+  loop: "{{ admin_ssh_keys }}"
+  when: admin_ssh_keys is defined and admin_ssh_keys | length > 0
+
+- name: Configurare Hardening del servizio OpenSSH
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  loop:
+    - { regexp: '^#?Port\s+.*', line: 'Port {{ ssh_port }}' }
+    - { regexp: '^#?PermitRootLogin\s+.*', line: 'PermitRootLogin {{ ssh_permit_root_login }}' }
+    - { regexp: '^#?PasswordAuthentication\s+.*', line: 'PasswordAuthentication {{ ssh_password_authentication }}' }
+    - { regexp: '^#?PubkeyAuthentication\s+.*', line: 'PubkeyAuthentication yes' }
+    - { regexp: '^#?X11Forwarding\s+.*', line: 'X11Forwarding no' }
+    - { regexp: '^#?AllowAgentForwarding\s+.*', line: 'AllowAgentForwarding no' }
+
+- name: Verificare la sintassi della configurazione sshd
+  ansible.builtin.command:
+    cmd: sshd -t
+  changed_when: false
+
+- name: Riavviare il servizio OpenSSH per applicare le nuove regole di sicurezza
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
