@@ -94,8 +94,10 @@
       HOME="/home/${USER}"
       export HOME
       export XDG_RUNTIME_DIR="/run/user/{{ docker_user_uid }}"
-      export PATH="${HOME}/bin:/usr/bin:/bin"
+      export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/docker.sock"
+      export PATH="${HOME}/bin:${PATH}"
 
+      command_user="${USER}:${USER}"
       command="${HOME}/bin/dockerd-rootless.sh"
       command_background="yes"
       pidfile="/run/docker-rootless-${USER}.pid"
@@ -108,6 +110,18 @@
       start_pre() {
           checkpath -d -m 0700 -o ${USER}:${USER} "${XDG_RUNTIME_DIR}"
       }
+
+- name: Configurare le variabili d'ambiente Docker Rootless per l'utente dedicato
+  ansible.builtin.blockinfile:
+    path: "/home/{{ docker_user }}/.bashrc"
+    create: true
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: '0644'
+    block: |
+      export XDG_RUNTIME_DIR="/run/user/{{ docker_user_uid }}"
+      export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/docker.sock"
+      export PATH="${HOME}/bin:${PATH}"
 
 - name: Abilitare ed avviare il servizio docker-rootless al boot
   ansible.builtin.service:
