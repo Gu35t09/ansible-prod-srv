@@ -108,3 +108,10 @@ ansible-playbook -i inventory.ini main.yml --vault-password-file .vault_pass
 ```bash
 ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
 ```
+
+---
+
+## 🧪 Testing e Verifica dei Servizi
+
+Per la guida completa passo-passo con tutti i comandi necessari per verificare il Playbook Ansible e i componenti del server Alpine Linux (Doas, SSH, Docker Rootless, ClamAV e test notifiche Telegram con firma EICAR), fai riferimento a:
+👉 **[verify.md](verify.md)**
