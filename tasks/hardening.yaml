@@ -48,6 +48,10 @@
     - { regexp: '^#?PubkeyAuthentication\s+.*', line: 'PubkeyAuthentication yes' }
     - { regexp: '^#?X11Forwarding\s+.*', line: 'X11Forwarding no' }
     - { regexp: '^#?AllowAgentForwarding\s+.*', line: 'AllowAgentForwarding no' }
+    - { regexp: '^#?MaxAuthTries\s+.*', line: 'MaxAuthTries 3' }
+    - { regexp: '^#?ClientAliveInterval\s+.*', line: 'ClientAliveInterval 300' }
+    - { regexp: '^#?ClientAliveCountMax\s+.*', line: 'ClientAliveCountMax 2' }
+    - { regexp: '^#?MaxStartups\s+.*', line: 'MaxStartups 10:30:100' }
 
 - name: Verificare la sintassi della configurazione sshd
   ansible.builtin.command:
