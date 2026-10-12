@@ -12,6 +12,8 @@
 # - Esecuzione solo aggiornamenti di sistema (per Job periodico Semaphore):
 #     ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
 # ==============================================================================
+# NB: si usa import_tasks (statico) e non include_tasks (dinamico): solo così i
+# tag vengono ereditati dai task importati e "--tags <nome>" li esegue davvero.
 
 - name: Configuratore e Manutentore Alpine Server
   hosts: alpine_servers
@@ -21,27 +23,39 @@
     - vars/vault.yml
 
   tasks:
-    - name: Inizio configurazione di base ed aggiornamenti
-      ansible.builtin.include_tasks: tasks/setup.yaml
+    - name: Configurazione di base e pacchetti
+      ansible.builtin.import_tasks: tasks/setup.yaml
       tags:
         - setup
         - base
 
     - name: Hardening del sistema, Doas e SSH
-      ansible.builtin.include_tasks: tasks/hardening.yaml
+      ansible.builtin.import_tasks: tasks/hardening.yaml
       tags:
         - hardening
         - security
         - ssh
 
     - name: Installazione, configurazione ClamAV e notifiche Telegram
-      ansible.builtin.include_tasks: tasks/clamav.yaml
+      ansible.builtin.import_tasks: tasks/clamav.yaml
       tags:
         - clamav
         - antivirus
 
     - name: Aggiornamento del sistema e dei pacchetti
-      ansible.builtin.include_tasks: tasks/update.yaml
+      ansible.builtin.import_tasks: tasks/update.yaml
       tags:
         - update
         - maintenance
+
+  handlers:
+    - name: Riavviare sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
+
+    - name: Riavviare clamd
+      ansible.builtin.service:
+        name: clamd
+        state: restarted
+      when: clamav_enabled | bool

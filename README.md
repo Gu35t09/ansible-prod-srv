@@ -8,7 +8,8 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 
 ```text
 .
-├── ansible.cfg                    # Configurazione Ansible (privilegi doas, callbacks)
+├── .gitignore                     # Esclude password vault, file temporanei e log locali
+├── ansible.cfg                    # Configurazione Ansible (privilegi doas)
 ├── inventory.ini                  # Inventario dei server Alpine target
 ├── main.yml                       # Playbook principale
 ├── vars/
@@ -21,7 +22,8 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 │   ├── clamav.yaml                # Installazione ClamAV, clamd daemon e Cron
 │   └── update.yaml                # Aggiornamenti periodici di sistema
 └── templates/
-    └── clamav_scan_telegram.sh.j2 # Template script di scansione con notifiche Telegram
+    ├── clamav_scan_telegram.sh.j2 # Template script di scansione con notifiche Telegram
+    └── sshd_hardening.conf.j2     # Drop-in di hardening OpenSSH (/etc/ssh/sshd_config.d/)
 ```
 
 ---
@@ -29,6 +31,8 @@ Questo repository contiene un playbook Ansible completo e modulare per la config
 ## 🔐 Gestione Variabili Sensibili con Ansible Vault
 
 I dati riservati come **Bot Token Telegram** e **Chat ID** sono memorizzati nel file `vars/vault.yml`.
+
+> ⚠️ `vars/vault.yml` va committato **solo criptato** (deve iniziare con `$ANSIBLE_VAULT;`). La password del vault (`.vault_pass`) non va mai nel repository ed è esclusa da `.gitignore`.
 
 ### Criptare il file vault:
 ```bash
@@ -50,15 +54,18 @@ ansible-vault decrypt vars/vault.yml
 ## 🚀 Caratteristiche Principali
 
 1. **Configurazione Iniziale e Hardening Semplice:**
-   - Abilitazione repository Alpine `community` e `main`.
-   - Privilegi elevati via `doas` invece del pesante `sudo`.
-   - Accesso SSH limitato: disabilitato il login `root` diretto e forzata l'autenticazione tramite chiavi SSH (porta 22).
+   - Abilitazione repository Alpine `community`.
+   - Privilegi elevati via `doas` (senza password) concessi al solo `admin_user`, con validazione della sintassi prima della scrittura.
+   - Accesso SSH limitato tramite drop-in `/etc/ssh/sshd_config.d/00-hardening.conf` validato con `sshd -t`: login `root` disabilitato, solo chiavi SSH, `AllowUsers` limitato ad `admin_user`.
+   - Il playbook si interrompe se `admin_ssh_keys` è vuota o se `ansible_user` è diverso da `admin_user`, per non perdere l'accesso al server.
 
 2. **ClamAV & Notifiche Telegram:**
    - Demone `clamd` e `freshclam` in background per l'aggiornamento continuo delle firme virus in RAM.
-   - Script di scansione programmato via Cron (es. ogni settimana) configurato in `templates/clamav_scan_telegram.sh.j2`.
-   - Invio automatico di una notifica formattata in Markdown su Telegram al termine di ogni scansione, indicando chiaramente l'esito nell'oggetto (`✅ SCANSIONE COMPLETATA - PULITA`, `⚠️ ALLERTA MALWARE`, o `❌ ERRORE`).
+   - Script di scansione (`/usr/local/bin/clamav_scan_telegram.sh`, permessi `0700` perché contiene il token) programmato via `crond` secondo `clamav_scan_schedule_cron` (default: ogni giorno alle 00:00).
+   - Invio automatico di una notifica in testo semplice su Telegram al termine di ogni scansione (`✅ SCANSIONE CLAMAV COMPLETATA - PULITA`, `⚠️ ALLERTA MALWARE CLAMAV` con l'elenco dei file rilevati, o `❌ ERRORE SCANSIONE CLAMAV`). Il token non compare mai nella lista dei processi.
    - Opzioni personalizzabili in `vars/main.yml`: `notify_only`, `quarantine`, oppure `remove`.
+   - La quarantena (`clamav_quarantine_dir`, default `/root/clamav-quarantine`, permessi `0700`) deve stare fuori dai percorsi scansionati: il playbook lo verifica.
+   - I log `scan_*.log` più vecchi di `clamav_log_retention_days` (default 30) vengono eliminati automaticamente.
 
 3. **Integrazione con Ansible Semaphore:**
    - In Semaphore, aggiungi la password di Ansible Vault nelle credenziali/environment del Key Store.
@@ -66,25 +73,28 @@ ansible-vault decrypt vars/vault.yml
      - `--tags setup`: Esegue setup iniziale e pacchetti.
      - `--tags hardening`: Configura SSH e doas.
      - `--tags clamav`: Configura antivirus e script notifiche Telegram.
-     - `--tags update`: Esegue gli aggiornamenti di sistema e pacchetti (`apk update && apk upgrade`).
+     - `--tags update`: Esegue gli aggiornamenti di sistema e pacchetti (`apk update && apk upgrade`); `clamd` viene riavviato solo se sono stati aggiornati pacchetti.
+   - I task sono importati con `import_tasks` (statico): è necessario perché i tag vengano ereditati dai task importati.
 
 ---
 
 ## 🛠️ Come Usare il Playbook
 
 ### 1. Configurazione Variabili e Vault
-- Modifica `vars/main.yml` (es. `admin_ssh_keys`).
+- Modifica `vars/main.yml` (es. `admin_user`, `admin_ssh_keys`, `system_timezone`).
 - Configura `vars/vault.yml` con il tuo Token Telegram e Chat ID, quindi cripta il file:
   ```bash
   ansible-vault encrypt vars/vault.yml
   ```
 
 ### 2. Configurazione Inventario
-Aggiorna `inventory.ini` con l'indirizzo IP del tuo server Alpine:
+Aggiorna `inventory.ini` con l'indirizzo IP del tuo server Alpine. `ansible_user` deve coincidere con `admin_user`:
 ```ini
 [alpine_servers]
-alpine-node-01 ansible_host=192.168.1.100 ansible_user=admin
+alpine-node-01 ansible_host=192.168.1.100 ansible_user=v
 ```
+
+> **Primo avvio (bootstrap):** il playbook usa `doas` per elevare i privilegi, quindi sul server deve già esistere l'utente `admin_user` con la tua chiave SSH, il pacchetto `doas` installato e una regola `permit nopass <admin_user>` in `/etc/doas.d/doas.conf`. Dalla prima esecuzione in poi la configurazione è gestita dal playbook.
 
 ### 3. Esecuzione via CLI
 

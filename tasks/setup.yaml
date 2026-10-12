@@ -3,7 +3,7 @@
 # TASK: CONFIGURAZIONE INIZIALE E PACCHETTI BASE (Alpine Linux)
 # ==============================================================================
 
-- name: Assicurarsi che i repository community e main di Alpine siano abilitati
+- name: Assicurarsi che il repository community di Alpine sia abilitato
   ansible.builtin.lineinfile:
     path: /etc/apk/repositories
     regexp: '^#?\s*(http.*/v\d+\.\d+/community)$'
@@ -29,9 +29,9 @@
       - python3
     state: present
 
-- name: Impostare il fuso orario di sistema su Europe/Rome
+- name: Impostare il fuso orario di sistema
   ansible.builtin.file:
-    src: /usr/share/zoneinfo/Europe/Rome
+    src: "/usr/share/zoneinfo/{{ system_timezone }}"
     dest: /etc/localtime
     state: link
     force: true

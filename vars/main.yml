@@ -3,11 +3,19 @@
 # VARIABILI DI CONFIGURAZIONE GENERALE DEL SERVER ALPINE
 # ==============================================================================
 
-# --- Configurazione Utente Amministrativo (Sudoer / Doas) ---
-admin_user: "v"
-# Inserisci qui le chiavi SSH pubbliche autorizzate ad accedere come utente admin
+# --- Sistema ---
+system_timezone: "Europe/Rome"
+
+# --- Configurazione Utente Amministrativo (Doas) ---
+# Deve coincidere con ansible_user dell'inventario: è l'unico utente abilitato
+# a doas e l'unico ammesso via SSH (AllowUsers).
+admin_user: "mattia"
+# Chiavi SSH pubbliche autorizzate ad accedere come utente admin.
+# Obbligatoria almeno una chiave: il playbook si ferma se la lista è vuota
+# (con PasswordAuthentication no si perderebbe l'accesso al server).
 admin_ssh_keys:
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAn6fwLJzRJjFsKK5LVGNTIxrYa9yCg10XO0rQL9JIuw mattia@nixos"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOLPkoGZUGiYdOW2noZwBttL+WMKoP72KuE2bAm6eNMM mattia.vallortigara@newcomm.it"
 
 # --- Hardening SSH ---
 ssh_port: 22
@@ -22,8 +30,9 @@ clamav_scan_paths:
   - "/etc"
   - "/var"
   - "/srv"
-  - "/var"
   - "/tmp"
+# Giorni di conservazione dei log di scansione (/var/log/clamav/scan_*.log)
+clamav_log_retention_days: 30
 
 # Notifiche Telegram per ClamAV (riferite alle variabili Vault definite in vars/vault.yml)
 telegram_notifications_enabled: true
@@ -35,4 +44,6 @@ telegram_chat_id: "{{ vault_telegram_chat_id }}"
 # - "quarantine"  : Sposta i file infetti nella cartella di quarantena ed invia la notifica
 # - "remove"      : Elimina automaticamente i file infetti ed invia la notifica
 clamav_action_on_detect: "quarantine"
-clamav_quarantine_dir: "/var/log/clamav/quarantine"
+# Deve stare FUORI da clamav_scan_paths (altrimenti i file in quarantena
+# verrebbero rilevati ad ogni scansione). Il playbook lo verifica.
+clamav_quarantine_dir: "/root/clamav-quarantine"

@@ -73,17 +73,20 @@ doas rc-service sshd status
 `status: started`
 
 ### 3.2 Verifica Direttive di Sicurezza
-Controlla che le regole di hardening impostate da Ansible siano applicate nel file di configurazione di SSH:
+L'hardening è nel drop-in `/etc/ssh/sshd_config.d/00-hardening.conf`. Controlla la configurazione **effettiva** di sshd (dopo l'unione di tutti i file):
 
 ```bash
-doas grep -E "Port|PermitRootLogin|PasswordAuthentication|PubkeyAuthentication" /etc/ssh/sshd_config
+doas sshd -T | grep -E "^(port|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication|allowusers|maxauthtries) "
 ```
 **Output atteso:**
 ```text
-Port 22
-PermitRootLogin no
-PasswordAuthentication no
-PubkeyAuthentication yes
+port 22
+permitrootlogin no
+pubkeyauthentication yes
+passwordauthentication no
+kbdinteractiveauthentication no
+maxauthtries 3
+allowusers v
 ```
 
 ---
@@ -99,14 +102,15 @@ doas rc-service freshclam status
 Entrambi i servizi devono risultare in stato `started`.
 
 ### 4.2 Verifica del Cron Job per la Scansione Schedulata
-Verifica che il job Cron sia presente nel crontab di root:
+Verifica che il demone `crond` sia attivo e che il job sia presente nel crontab di root:
 
 ```bash
+doas rc-service crond status
 doas crontab -l
 ```
 **Output atteso:**
-Presenza della riga:
-`0 2 * * 0 /usr/local/bin/clamav_scan_telegram.sh > /dev/null 2>&1`
+`status: started` e la riga (con lo schedule di default `clamav_scan_schedule_cron: "0 0 * * *"`):
+`0 0 * * * /usr/local/bin/clamav_scan_telegram.sh > /dev/null 2>&1`
 
 ### 4.3 Esecuzione Manuale dello Script di Scansione
 Esegui manualmente lo script generato da Ansible:
@@ -123,11 +127,13 @@ doas cat $(ls -t /var/log/clamav/scan_*.log | head -n 1)
 **Output atteso:**
 1. Log dettagliato della scansione terminante con `Scansione completata. Nessuna minaccia rilevata.`
 2. Ricezione di una notifica su Telegram con l'esito:
-   > ✅ **SCANSIONE CLAMAV COMPLETATA - PULITA**
+   > ✅ SCANSIONE CLAMAV COMPLETATA - PULITA
    >
-   > 🖥️ **Server:** `alpine-node-01`
-   > 🦠 **File Infetti Rilevati:** `0`
-   > 📁 **Percorsi Scansionati:** `/home/v /etc /var`
+   > 🖥️ Server: alpine-node-01
+   > 🦠 File infetti rilevati: 0
+   > 📁 Percorsi scansionati: /home/v /etc /var /srv /tmp
+
+Se la notifica non arriva, nel log è presente la riga `ERRORE: invio della notifica Telegram fallito.` con il dettaglio dell'errore di curl.
 
 ---
 
@@ -153,21 +159,23 @@ doas /usr/local/bin/clamav_scan_telegram.sh
 1. Lo script termina con codice di uscita `1` (indicante minaccia trovata).
 2. Riceverai immediatamente un messaggio sul tuo canale/chat Telegram configurato, simile a:
 
-> ⚠️ **ALLERTA MALWARE CLAMAV** ⚠️
+> ⚠️ ALLERTA MALWARE CLAMAV ⚠️
 >
-> 🖥️ **Server:** `alpine-node-01`
-> 🦠 **File Infetti Rilevati:** `1`
-> 🛠️ **Azione Eseguita:** `notify_only`
-> 📁 **Percorsi Scansionati:** `/home/v /etc /var`
+> 🖥️ Server: alpine-node-01
+> 🦠 File infetti rilevati: 1
+> 🛠️ Azione eseguita: quarantine
+> 📁 Percorsi scansionati: /home/v /etc /var /srv /tmp
 >
-> 📋 **Dettagli Report:**
-> ... `Eicar-Signature FOUND` ...
+> 📋 File rilevati (max 20):
+> /home/v/eicar.com: Eicar-Signature FOUND
+
+Con `clamav_action_on_detect: quarantine` (default) il file viene spostato in `/root/clamav-quarantine`.
 
 ### 5.3 Pulizia del File di Test
-Al termine della verifica, rimuovi il file di test EICAR:
+Al termine della verifica, rimuovi il file di test EICAR (dalla quarantena, se l'azione è `quarantine`):
 
 ```bash
-doas rm -f /home/v/eicar.com
+doas rm -f /home/v/eicar.com /root/clamav-quarantine/eicar.com
 ```
 
 Verifica che rieseguendo la scansione non vengano più rilevate minacce:

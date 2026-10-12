@@ -1,54 +1,68 @@
 #!/bin/bash
 # ==============================================================================
 # SCRIPT DI SCANSIONE CLAMAV CON NOTIFICA TELEGRAM
-# Generato automaticamente da Ansible per Alpine Linux
+# {{ ansible_managed }}
+# Contiene il token Telegram: deve restare di proprietà di root con permessi 0700.
 # ==============================================================================
 
-BOT_TOKEN="{{ telegram_bot_token }}"
-CHAT_ID="{{ telegram_chat_id }}"
-NOTIFY_ENABLED="{{ telegram_notifications_enabled | default('true') | lower }}"
-ACTION="{{ clamav_action_on_detect | default('notify_only') }}"
-QUARANTINE_DIR="{{ clamav_quarantine_dir | default('/var/log/clamav/quarantine') }}"
-SCAN_PATHS="{{ clamav_scan_paths | join(' ') }}"
-LOG_FILE="/var/log/clamav/scan_$(date +%Y%m%d_%H%M%S).log"
+BOT_TOKEN={{ telegram_bot_token | quote }}
+CHAT_ID={{ telegram_chat_id | quote }}
+NOTIFY_ENABLED={{ telegram_notifications_enabled | default(true) | string | lower | quote }}
+ACTION={{ clamav_action_on_detect | default('notify_only') | quote }}
+QUARANTINE_DIR={{ clamav_quarantine_dir | quote }}
+SCAN_PATHS=({% for path in clamav_scan_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
+LOG_DIR="/var/log/clamav"
+LOG_RETENTION_DAYS={{ clamav_log_retention_days | int }}
+LOG_FILE="${LOG_DIR}/scan_$(date +%Y%m%d_%H%M%S).log"
 HOSTNAME=$(hostname)
 
 # Assicurarsi che la directory di log e quarantena esistano
-mkdir -p /var/log/clamav
+mkdir -p "$LOG_DIR"
 if [ "$ACTION" = "quarantine" ]; then
-    mkdir -p "$QUARANTINE_DIR"
+    mkdir -p -m 700 "$QUARANTINE_DIR"
 fi
 
-# Funzione per inviare messaggi su Telegram
+# Pulizia dei log di scansione più vecchi del periodo di conservazione
+find "$LOG_DIR" -maxdepth 1 -name 'scan_*.log' -mtime +"$LOG_RETENTION_DAYS" -delete
+
+# Funzione per inviare messaggi su Telegram (testo semplice, senza parse_mode:
+# nomi file con caratteri come _ o ` non possono far rifiutare il messaggio).
 send_telegram_notification() {
-    local MESSAGE="$1"
-    if [ "$NOTIFY_ENABLED" = "true" ] && [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "YOUR_TELEGRAM_BOT_TOKEN_HERE" ]; then
-        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d "parse_mode=Markdown" \
+    local message="$1"
+    [ "$NOTIFY_ENABLED" = "true" ] || return 0
+    if [ -z "$BOT_TOKEN" ] || [ "$BOT_TOKEN" = "YOUR_TELEGRAM_BOT_TOKEN_HERE" ]; then
+        echo "Notifica Telegram non inviata: token non configurato." >> "$LOG_FILE"
+        return 0
+    fi
+    # L'URL con il token è passato a curl via stdin (-K -) e non come argomento,
+    # così non compare nella lista dei processi (ps).
+    if ! printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$BOT_TOKEN" \
+        | curl -fsS --max-time 20 -o /dev/null -K - \
             --data-urlencode "chat_id=${CHAT_ID}" \
-            --data-urlencode "text=${MESSAGE}" > /dev/null 2>&1
+            --data-urlencode "text=${message}" >> "$LOG_FILE" 2>&1; then
+        echo "ERRORE: invio della notifica Telegram fallito." >> "$LOG_FILE"
     fi
 }
 
 echo "=== Inizio Scansione ClamAV su $HOSTNAME: $(date) ===" > "$LOG_FILE"
 
-# Costruzione del comando clamdscan / clamscan
 # Utilizziamo clamdscan se il daemon clamd è attivo (molto più veloce), altrimenti clamscan
 if pgrep -x "clamd" > /dev/null; then
-    SCAN_CMD="clamdscan --multiscan --fdpass"
+    SCAN_CMD=(clamdscan --multiscan --fdpass)
 else
-    SCAN_CMD="clamscan -r"
+    echo "ATTENZIONE: clamd non attivo, uso clamscan (più lento)." >> "$LOG_FILE"
+    SCAN_CMD=(clamscan -r)
 fi
 
 # Aggiunta opzioni in base all'azione configurata
 if [ "$ACTION" = "quarantine" ]; then
-    SCAN_CMD="$SCAN_CMD --move=$QUARANTINE_DIR"
+    SCAN_CMD+=("--move=$QUARANTINE_DIR")
 elif [ "$ACTION" = "remove" ]; then
-    SCAN_CMD="$SCAN_CMD --remove=yes"
+    SCAN_CMD+=(--remove=yes)
 fi
 
 # Esecuzione dello scan
-$SCAN_CMD $SCAN_PATHS >> "$LOG_FILE" 2>&1
+"${SCAN_CMD[@]}" "${SCAN_PATHS[@]}" >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 # Interpretazione dei codici di uscita di ClamAV:
@@ -58,54 +72,50 @@ EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 1 ]; then
     INFECTED_COUNT=$(grep -i "Infected files:" "$LOG_FILE" | awk '{print $3}')
-    summary_details=$(grep -A 10 "KNOWN VIRUSES:" "$LOG_FILE" | tail -n 10)
+    found_files=$(grep "FOUND$" "$LOG_FILE" | head -n 20)
 
-    TEXT=$(cat <<EOF
-⚠️ *ALLERTA MALWARE CLAMAV* ⚠️
+    TEXT=$(cat <<MSG
+⚠️ ALLERTA MALWARE CLAMAV ⚠️
 
-🖥️ *Server:* \`${HOSTNAME}\`
-🦠 *File Infetti Rilevati:* \`${INFECTED_COUNT}\`
-🛠️ *Azione Eseguita:* \`${ACTION}\`
-📁 *Percorsi Scansionati:* \`${SCAN_PATHS}\`
+🖥️ Server: ${HOSTNAME}
+🦠 File infetti rilevati: ${INFECTED_COUNT}
+🛠️ Azione eseguita: ${ACTION}
+📁 Percorsi scansionati: ${SCAN_PATHS[*]}
 
-📋 *Dettagli Report:*
-\`\`\`
-${summary_details}
-\`\`\`
-EOF
+📋 File rilevati (max 20):
+${found_files}
+
+Log completo: ${LOG_FILE}
+MSG
 )
-
     send_telegram_notification "$TEXT"
 elif [ $EXIT_CODE -gt 1 ]; then
-    TEXT=$(cat <<EOF
-❌ *ERRORE SCANSIONE CLAMAV*
+    TEXT=$(cat <<MSG
+❌ ERRORE SCANSIONE CLAMAV
 
-Si è verificato un errore durante la scansione programmata sul server \`${HOSTNAME}\`.
-Controllare il log: \`${LOG_FILE}\`
-EOF
+Si è verificato un errore (codice ${EXIT_CODE}) durante la scansione programmata sul server ${HOSTNAME}.
+Controllare il log: ${LOG_FILE}
+MSG
 )
     send_telegram_notification "$TEXT"
 else
     echo "Scansione completata. Nessuna minaccia rilevata." >> "$LOG_FILE"
-    summary_details=$(grep -i -A 10 "KNOWN VIRUSES:" "$LOG_FILE" | tail -n 10)
+    summary_details=$(grep -i -A 10 "SCAN SUMMARY" "$LOG_FILE" | tail -n 10)
     if [ -z "$summary_details" ]; then
         summary_details=$(tail -n 10 "$LOG_FILE")
     fi
 
-    TEXT=$(cat <<EOF
-✅ *SCANSIONE CLAMAV COMPLETATA - PULITA*
+    TEXT=$(cat <<MSG
+✅ SCANSIONE CLAMAV COMPLETATA - PULITA
 
-🖥️ *Server:* \`${HOSTNAME}\`
-🦠 *File Infetti Rilevati:* \`0\`
-📁 *Percorsi Scansionati:* \`${SCAN_PATHS}\`
+🖥️ Server: ${HOSTNAME}
+🦠 File infetti rilevati: 0
+📁 Percorsi scansionati: ${SCAN_PATHS[*]}
 
-📋 *Dettagli Report:*
-\`\`\`
+📋 Dettagli report:
 ${summary_details}
-\`\`\`
-EOF
+MSG
 )
-
     send_telegram_notification "$TEXT"
 fi
 

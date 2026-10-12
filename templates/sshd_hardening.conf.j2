@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# Hardening OpenSSH - incluso in cima a /etc/ssh/sshd_config
+
+Port {{ ssh_port }}
+PermitRootLogin {{ ssh_permit_root_login }}
+
+# Solo autenticazione a chiave pubblica
+PubkeyAuthentication yes
+PasswordAuthentication {{ ssh_password_authentication }}
+KbdInteractiveAuthentication no
+
+# Solo l'utente amministrativo può accedere via SSH
+AllowUsers {{ admin_user }}
+
+X11Forwarding no
+AllowAgentForwarding no
+
+# Limiti contro brute-force e sessioni appese
+MaxAuthTries 3
+MaxStartups 10:30:100
+ClientAliveInterval 300
+ClientAliveCountMax 2

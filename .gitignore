@@ -1,0 +1,26 @@
+# --- Segreti: la password di Ansible Vault non va MAI nel repository ---
+# (vars/vault.yml invece va committato, ma solo CRIPTATO con ansible-vault)
+.vault_pass
+.vault_pass*
+*.vault_pass
+vault_pass*.txt
+
+# --- Ansible ---
+*.retry
+.ansible/
+
+# --- Log / note di agenti AI e strumenti locali ---
+.jules/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

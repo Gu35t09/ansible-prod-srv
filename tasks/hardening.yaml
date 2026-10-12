@@ -3,21 +3,22 @@
 # TASK: HARDENING SISTEMA, UTENTI, DOAS ED SSH
 # ==============================================================================
 
+- name: Verificare i prerequisiti per non perdere l'accesso al server
+  ansible.builtin.assert:
+    that:
+      - admin_ssh_keys is defined
+      - admin_ssh_keys | length > 0
+      - (ansible_user | default(admin_user)) == admin_user
+    fail_msg: >-
+      admin_ssh_keys deve contenere almeno una chiave e ansible_user deve coincidere
+      con admin_user: con PasswordAuthentication no, AllowUsers e doas limitato ad
+      admin_user si perderebbe l'accesso (o i privilegi) sul server.
+    quiet: true
+
 - name: Creare il gruppo wheel se non esiste
   ansible.builtin.group:
     name: wheel
     state: present
-
-- name: Configurare doas per permettere ai membri del gruppo wheel l'elevazione dei privilegi senza password
-  ansible.builtin.copy:
-    dest: /etc/doas.d/doas.conf
-    content: |
-      # Configurazione doas per amministrazione del server
-      permit nopass :wheel
-      permit nopass root
-    owner: root
-    group: root
-    mode: '0600'
 
 - name: Creare l'utente amministrativo
   ansible.builtin.user:
@@ -33,32 +34,57 @@
     state: present
     key: "{{ item }}"
   loop: "{{ admin_ssh_keys }}"
-  when: admin_ssh_keys is defined and admin_ssh_keys | length > 0
 
-- name: Configurare Hardening del servizio OpenSSH
+# Senza password: necessario perché Ansible usa doas in modo non interattivo e
+# l'utente accede solo con chiave. La regola è limitata al solo admin_user.
+- name: Configurare doas per l'utente amministrativo
+  ansible.builtin.copy:
+    dest: /etc/doas.d/doas.conf
+    content: |
+      # Gestito da Ansible (ansible-prod-srv): le modifiche manuali verranno sovrascritte
+      permit nopass {{ admin_user }}
+    owner: root
+    group: root
+    mode: '0600'
+    validate: doas -C %s
+
+# L'hardening SSH vive in un drop-in validato con "sshd -t" prima di essere
+# scritto: un errore non rompe mai la configurazione in uso.
+- name: Creare la directory dei drop-in di sshd
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configurare l'hardening di OpenSSH (drop-in)
+  ansible.builtin.template:
+    src: templates/sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: '0600'
+    validate: sshd -t -f %s
+  notify: Riavviare sshd
+
+# In sshd vale la prima occorrenza di ogni direttiva: l'Include deve stare in cima.
+- name: Includere i drop-in all'inizio di sshd_config
   ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
-    regexp: "{{ item.regexp }}"
-    line: "{{ item.line }}"
-    state: present
-  loop:
-    - { regexp: '^#?Port\s+.*', line: 'Port {{ ssh_port }}' }
-    - { regexp: '^#?PermitRootLogin\s+.*', line: 'PermitRootLogin {{ ssh_permit_root_login }}' }
-    - { regexp: '^#?PasswordAuthentication\s+.*', line: 'PasswordAuthentication {{ ssh_password_authentication }}' }
-    - { regexp: '^#?PubkeyAuthentication\s+.*', line: 'PubkeyAuthentication yes' }
-    - { regexp: '^#?X11Forwarding\s+.*', line: 'X11Forwarding no' }
-    - { regexp: '^#?AllowAgentForwarding\s+.*', line: 'AllowAgentForwarding no' }
-    - { regexp: '^#?MaxAuthTries\s+.*', line: 'MaxAuthTries 3' }
-    - { regexp: '^#?ClientAliveInterval\s+.*', line: 'ClientAliveInterval 300' }
-    - { regexp: '^#?ClientAliveCountMax\s+.*', line: 'ClientAliveCountMax 2' }
-    - { regexp: '^#?MaxStartups\s+.*', line: 'MaxStartups 10:30:100' }
+    regexp: '^#?\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf'
+    line: 'Include /etc/ssh/sshd_config.d/*.conf'
+    insertbefore: BOF
+    validate: sshd -t -f %s
+  notify: Riavviare sshd
 
-- name: Verificare la sintassi della configurazione sshd
-  ansible.builtin.command:
-    cmd: sshd -t
-  changed_when: false
-
-- name: Riavviare il servizio OpenSSH per applicare le nuove regole di sicurezza
-  ansible.builtin.service:
-    name: sshd
-    state: restarted
+# Rimuove da sshd_config le direttive ora gestite dal drop-in (es. scritte da
+# versioni precedenti del playbook). "Port" in particolare è cumulativa: se
+# restasse anche qui, sshd ascolterebbe su entrambe le porte.
+- name: Rimuovere da sshd_config le direttive gestite dal drop-in
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^(Port|PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|PubkeyAuthentication|AllowUsers|X11Forwarding|AllowAgentForwarding|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax|MaxStartups)\s'
+    state: absent
+    validate: sshd -t -f %s
+  notify: Riavviare sshd
