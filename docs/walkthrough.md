@@ -70,6 +70,57 @@ From lowest to highest precedence, as used here:
 
 Some variables appear in the defaults of more than one role (`ssh_port`, `docker_user`, `mgmt_address`). This is deliberate: each role can run on its own, and the value in `group_vars` wins over all of those defaults.
 
+### Drop-in files
+
+Almost every configuration change in this playbook is a **drop-in**: a small file in a `*.d/` directory that changes a few settings, while the main configuration file shipped by the package stays untouched.
+
+**Why not edit the main file.** For Debian, files like `/etc/systemd/journald.conf` are *conffiles*: they belong to a package. If you edit one and an upgrade ships a new version, dpkg has two versions to choose from. In an interactive upgrade it asks which one to keep. In an automatic one (unattended-upgrades, or Ansible's `apt` module, which uses `--force-confold`) it silently keeps yours and drops the new one, along with any new setting or fix it contained. Ansible would also have to edit lines inside someone else's file, which is fragile.
+
+A drop-in avoids both problems. dpkg manages only the files a package ships, and `/etc/systemd/journald.conf.d/10-size.conf` belongs to no package, so upgrades replace the main file freely and the drop-in keeps applying on top of it. To check that no package owns it:
+
+```bash
+dpkg -S /etc/systemd/journald.conf.d/10-size.conf    # "no path found matching pattern"
+```
+
+**How systemd combines the files** (journald and timesyncd here; see `man systemd.conf.d`):
+
+1. It reads the main file, then every `*.conf` in `journald.conf.d/` under `/usr/lib/systemd/` (shipped by packages), `/run/systemd/` (runtime only, gone at reboot) and `/etc/systemd/` (the administrator's, which is where Ansible writes).
+2. All drop-ins are applied in **alphabetical order of their file name**, whatever directory they come from. For a single-value setting, the last one read wins. That is why names start with a number: `10-size.conf` sorts before `90-something.conf`.
+3. If the same file name exists in more than one directory, only the one in `/etc` is used. This is how you replace a drop-in shipped by a package.
+4. A drop-in contains only the lines it changes. Every other setting keeps its default.
+
+**Empty assignments reset lists.** For settings that hold a list, an empty assignment clears everything collected so far. The timesyncd drop-in relies on this:
+
+```ini
+[Time]
+NTP=10.0.10.1
+FallbackNTP=
+```
+
+`FallbackNTP=` with no value removes Debian's fallback pools (`*.debian.pool.ntp.org`), so timesyncd uses OPNsense only. The pools would be blocked by egress filtering anyway.
+
+**Seeing the effective configuration.** This prints every file systemd reads, in the order it applies them, each with its path:
+
+```bash
+systemd-analyze cat-config systemd/journald.conf
+systemd-analyze cat-config systemd/timesyncd.conf
+```
+
+It is the quickest way to find out where a value comes from.
+
+**The same idea elsewhere in the playbook.** The `*.d/` pattern is common on Linux, but the precedence rule is not always the same:
+
+| Drop-in | Directory | Which value wins |
+| --- | --- | --- |
+| `10-local.conf`, `10-size.conf` | `/etc/systemd/{timesyncd,journald}.conf.d/` | The **last** one read |
+| `00-hardening.conf` | `/etc/ssh/sshd_config.d/` | The **first** one read: hence `00`, and the `Include` at the top of `sshd_config` |
+| `90-admin` | `/etc/sudoers.d/` | Rules add up; for conflicting ones the last match wins |
+| `52unattended-upgrades-local` | `/etc/apt/apt.conf.d/` | The last one read, while lists add up unless cleared with `#clear` |
+| `60-hardening.conf`, `60-rootless-docker.conf` | `/etc/sysctl.d/` | The last one read |
+| `50-ansible.conf` | `/etc/needrestart/conf.d/` | The last one read |
+
+Services work the same way: `systemctl edit <name>.service` creates `/etc/systemd/system/<name>.service.d/override.conf`, which changes a unit without touching the package's file.
+
 ### Handlers
 
 A handler is a task that runs only when another task reports "changed" and names it in `notify:`. Handlers run once, at the end of the play or at a `meta: flush_handlers`. For example, sshd is restarted only if its configuration actually changed.
@@ -142,7 +193,7 @@ Installs `base_packages` (in `defaults/main.yml`). Three of them are not obvious
 `community.general.timezone` calls `timedatectl set-timezone`.
 
 **Create the systemd drop-in directories**
-Creates `/etc/systemd/timesyncd.conf.d` and `/etc/systemd/journald.conf.d`. A drop-in is a small file that overrides part of a configuration without editing the original. Package upgrades never overwrite drop-ins.
+Creates `/etc/systemd/timesyncd.conf.d` and `/etc/systemd/journald.conf.d`, where the next two tasks write their drop-ins (see [Drop-in files](#drop-in-files) for how they work). Debian does not create these directories, and the `copy` module does not create missing parent directories, so without this task the next two would fail.
 
 **Point systemd-timesyncd to the local NTP servers**
 Writes `NTP=<OPNsense>` and empties `FallbackNTP=`, so the server never tries the Debian NTP pools, which egress filtering would block anyway. On change it restarts timesyncd. It is skipped if `ntp_servers` is empty.
