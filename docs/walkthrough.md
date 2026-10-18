@@ -1,5 +1,7 @@
 # Playbook walkthrough
 
+For day-to-day operations see [maintenance.md](maintenance.md).
+
 This document explains every part of the playbook: what each task does, why it is there, and how to check it. Read it side by side with the code. Task names here match the `name:` fields in the roles, so you can search for them.
 
 Contents:

@@ -142,6 +142,8 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 
 [docs/walkthrough.md](docs/walkthrough.md) explains every role task by task: what it does, why, and how to check it.
 
+[docs/maintenance.md](docs/maintenance.md) is the maintenance guide: calendar, what to do for each notification, routine procedures, troubleshooting and recovery.
+
 ## Checks
 
 [verify.md](verify.md) lists the commands to check each part on the server, including a ClamAV test with the EICAR file.
