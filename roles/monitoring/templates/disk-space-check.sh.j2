@@ -1,0 +1,49 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Notifies when a filesystem goes above the threshold, and again when it
+# returns below it. The state is kept per mount point, so an alert is sent once
+# per crossing instead of every run.
+set -u
+
+THRESHOLD={{ disk_space_warn_percent | int }}
+MOUNTPOINTS=({% for mp in disk_space_mountpoints %}{{ mp | quote }}{{ ' ' if not loop.last }}{% endfor %})
+STATE_DIR=/var/lib/disk-space-check
+HOST=$(hostname)
+
+mkdir -p "$STATE_DIR"
+
+for mp in "${MOUNTPOINTS[@]}"; do
+    used=$(df --output=pcent "$mp" 2>/dev/null | tail -n 1 | tr -dc '0-9')
+    if [ -z "$used" ]; then
+        echo "disk-space-check: cannot read $mp" >&2
+        continue
+    fi
+    avail=$(df -h --output=avail "$mp" | tail -n 1 | tr -d ' ')
+    state_file="$STATE_DIR/$(echo "$mp" | tr '/' '_')"
+    previous=$(cat "$state_file" 2>/dev/null || echo ok)
+
+    if [ "$used" -ge "$THRESHOLD" ]; then
+        current=warn
+    else
+        current=ok
+    fi
+
+    if [ "$current" != "$previous" ]; then
+        if [ "$current" = "warn" ]; then
+            message="⚠️ DISK SPACE LOW
+
+🖥️ Server: ${HOST}
+📁 ${mp}: ${used}% used, ${avail} free (threshold ${THRESHOLD}%)"
+        else
+            message="✅ DISK SPACE BACK TO NORMAL
+
+🖥️ Server: ${HOST}
+📁 ${mp}: ${used}% used, ${avail} free"
+        fi
+        # Save the new state only if the notification went out, so a failed
+        # send is retried at the next run.
+        if /usr/local/sbin/notify-telegram "$message"; then
+            echo "$current" > "$state_file"
+        fi
+    fi
+done

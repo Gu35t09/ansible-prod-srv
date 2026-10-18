@@ -1,0 +1,7 @@
+---
+profile: production
+offline: true
+skip_list:
+  # Site-wide settings (admin_user, ssh_port, docker_user, telegram_*) are
+  # shared by several roles on purpose, so they carry no role prefix.
+  - var-naming[no-role-prefix]

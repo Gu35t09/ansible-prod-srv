@@ -1,0 +1,15 @@
+#!/bin/sh
+# Refuses commits that would add an unencrypted Ansible Vault file.
+# Enable once per clone:  git config core.hooksPath .githooks
+status=0
+for file in $(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)vault\.ya?ml$'); do
+    first_line=$(git show ":$file" | head -n 1)
+    case "$first_line" in
+        '$ANSIBLE_VAULT;'*) ;;
+        *)
+            echo "pre-commit: $file is not encrypted. Run: ansible-vault encrypt $file" >&2
+            status=1
+            ;;
+    esac
+done
+exit $status

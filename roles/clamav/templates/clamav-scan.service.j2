@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Scheduled ClamAV scan with Telegram notification
+After=clamav-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clamav-scan
+# Exit code 1 means "threats found": already reported, not a unit failure.
+SuccessExitStatus=1
+Nice=19
+IOSchedulingClass=idle

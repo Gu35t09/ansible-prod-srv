@@ -1,0 +1,101 @@
+---
+- name: Set the hostname
+  ansible.builtin.hostname:
+    name: "{{ server_hostname }}"
+    use: systemd
+  when: server_hostname | length > 0
+
+- name: Map the hostname to the loopback address
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1\t{{ server_hostname }}"
+  when: server_hostname | length > 0
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Set the timezone
+  community.general.timezone:
+    name: "{{ system_timezone }}"
+
+- name: Create the systemd drop-in directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/systemd/timesyncd.conf.d
+    - /etc/systemd/journald.conf.d
+
+- name: Point systemd-timesyncd to the local NTP servers
+  ansible.builtin.copy:
+    dest: /etc/systemd/timesyncd.conf.d/10-local.conf
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      [Time]
+      NTP={{ ntp_servers | join(' ') }}
+      FallbackNTP=
+    owner: root
+    group: root
+    mode: "0644"
+  when: ntp_servers | length > 0
+  notify: Restart systemd-timesyncd
+
+- name: Cap the size of the persistent journal
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-size.conf
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ journald_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart systemd-journald
+
+- name: Restrict unattended-upgrades to Debian security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    content: |
+      // Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      // Only security updates are installed automatically. Everything else,
+      // and any reboot, goes through the update-os tag. #clear drops the
+      // origins listed in 50unattended-upgrades before setting ours.
+      #clear Unattended-Upgrade::Origins-Pattern;
+      Unattended-Upgrade::Origins-Pattern {
+              "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the daily unattended-upgrades run
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      // Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure needrestart to restart services after upgrades
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/50-ansible.conf
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      $nrconf{restart} = '{{ needrestart_mode }}';
+    owner: root
+    group: root
+    mode: "0644"

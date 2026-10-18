@@ -1,0 +1,48 @@
+---
+# ==============================================================================
+# Production server: configuration and maintenance
+# ==============================================================================
+# Full configuration (network and update-os are excluded, see below):
+#   ansible-playbook site.yml --ask-vault-pass
+#
+# Single area:
+#   ansible-playbook site.yml --tags clamav --ask-vault-pass
+#
+# Roles tagged "never" run only when their tag is requested explicitly:
+#   --tags network    VLAN trunk, addresses and source routing (can cut access)
+#   --tags update-os  package upgrades and reboot when required (Semaphore job)
+# ==============================================================================
+
+- name: Configure the production server
+  hosts: prod_servers
+  gather_facts: true
+
+  pre_tasks:
+    - name: Check that the target runs Debian 13
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Debian'
+          - ansible_facts['distribution_major_version'] == '13'
+        fail_msg: >-
+          This playbook targets Debian 13 (trixie); the host reports
+          {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+        quiet: true
+      tags: always
+
+  roles:
+    - role: base
+      tags: [base]
+    - role: hardening
+      tags: [hardening, security]
+    - role: network
+      tags: [network, never]
+    - role: firewall_host
+      tags: [firewall, security]
+    - role: docker_rootless
+      tags: [docker]
+    - role: clamav
+      tags: [clamav]
+    - role: monitoring
+      tags: [monitoring]
+    - role: update_os
+      tags: [update-os, never]

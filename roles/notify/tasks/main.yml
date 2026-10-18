@@ -1,0 +1,43 @@
+---
+# One helper sends every server notification (ClamAV, SMART, disk space).
+# The token lives only in a root-only environment file, never in the scripts.
+
+- name: Check the Telegram settings
+  ansible.builtin.assert:
+    that:
+      - telegram_bot_token | length > 0
+      - telegram_chat_id | length > 0
+    fail_msg: >-
+      notify_telegram_enabled is true but the Telegram token or chat ID is empty:
+      define vault_telegram_bot_token and vault_telegram_chat_id in the vault.
+    quiet: true
+  when: notify_telegram_enabled | bool
+
+- name: Create the configuration directory
+  ansible.builtin.file:
+    path: "{{ notify_env_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write the notification credentials
+  ansible.builtin.copy:
+    dest: "{{ notify_env_file }}"
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      NOTIFY_ENABLED={{ notify_telegram_enabled | bool | string | lower | quote }}
+      TELEGRAM_BOT_TOKEN={{ telegram_bot_token | quote }}
+      TELEGRAM_CHAT_ID={{ telegram_chat_id | quote }}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the notification helper
+  ansible.builtin.template:
+    src: notify-telegram.sh.j2
+    dest: /usr/local/sbin/notify-telegram
+    owner: root
+    group: root
+    mode: "0750"

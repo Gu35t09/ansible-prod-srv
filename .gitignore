@@ -1,5 +1,5 @@
-# --- Segreti: la password di Ansible Vault non va MAI nel repository ---
-# (vars/vault.yml invece va committato, ma solo CRIPTATO con ansible-vault)
+# --- Secrets: the Ansible Vault password never goes in the repository ---
+# (vault.yml is committed, but only encrypted; .githooks/pre-commit checks it)
 .vault_pass
 .vault_pass*
 *.vault_pass
@@ -9,7 +9,7 @@ vault_pass*.txt
 *.retry
 .ansible/
 
-# --- Log / note di agenti AI e strumenti locali ---
+# --- Local tools ---
 .jules/
 
 # --- Python ---

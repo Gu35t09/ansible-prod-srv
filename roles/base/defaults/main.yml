@@ -1,0 +1,23 @@
+---
+server_hostname: ""
+system_timezone: "Etc/UTC"
+# Empty list keeps the Debian defaults (pool servers, unreachable with egress
+# blocked on the firewall).
+ntp_servers: []
+journald_max_use: "500M"
+
+base_packages:
+  - acl            # lets Ansible become unprivileged users (docker_rootless)
+  - ca-certificates
+  - curl
+  - htop
+  - logrotate
+  - nano
+  - needrestart
+  - python3-apt
+  - sudo
+  - unattended-upgrades
+
+# needrestart mode after package upgrades: a = restart services automatically,
+# l = only list them.
+needrestart_mode: "a"

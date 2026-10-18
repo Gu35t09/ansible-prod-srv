@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+# OpenSSH hardening, included at the top of /etc/ssh/sshd_config.
+
+Port {{ ssh_port }}
+{% if ssh_listen_address | length > 0 %}
+# SSH only on the management address.
+ListenAddress {{ ssh_listen_address }}
+{% endif %}
+PermitRootLogin no
+
+# Public key authentication only
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+# Only the administrative user may log in
+AllowUsers {{ admin_user }}
+
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+
+# Limits against brute force and stale sessions
+MaxAuthTries 3
+MaxStartups 10:30:100
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2

@@ -1,0 +1,15 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Started at boot while /etc/network/interfaces.rollback exists. If Ansible
+# does not confirm the new configuration in time (by deleting that file),
+# the previous configuration is restored and the server reboots.
+set -eu
+
+sleep {{ (network_rollback_minutes | int) * 60 }}
+
+if [ -f /etc/network/interfaces.rollback ]; then
+    logger -t network-rollback "Network change not confirmed: restoring the previous configuration"
+    mv /etc/network/interfaces.rollback /etc/network/interfaces
+    systemctl disable network-rollback.service
+    systemctl reboot
+fi

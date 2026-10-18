@@ -1,0 +1,49 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Inbound: deny by default. Outbound: allowed here, filtered by OPNsense.
+
+flush ruleset
+
+table inet filter {
+{% if firewall_ssh_allowed_sources | length > 0 %}
+    set ssh_sources {
+        type ipv4_addr
+        flags interval
+        elements = { {{ firewall_ssh_allowed_sources | join(', ') }} }
+    }
+
+{% endif %}
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif "lo" accept
+
+        # ICMP and ICMPv6 (path MTU discovery, neighbour discovery)
+        meta l4proto icmp accept
+        meta l4proto ipv6-icmp accept
+
+        # SSH{{ ' on the management address' if mgmt_address | length > 0 else '' }}
+        {{ ('ip daddr ' ~ mgmt_address ~ ' ') if mgmt_address | length > 0 else '' }}{{ 'ip saddr @ssh_sources ' if firewall_ssh_allowed_sources | length > 0 else '' }}tcp dport {{ ssh_port }} accept
+
+{% for proto in ['tcp', 'udp'] %}
+{% if firewall_service_ports[proto] | default([]) | length > 0 %}
+        # Services ({{ proto }}){{ ' on the services address' if services_address | length > 0 else '' }}
+        {{ ('ip daddr ' ~ services_address ~ ' ') if services_address | length > 0 else '' }}{{ proto }} dport { {{ firewall_service_ports[proto] | join(', ') }} } accept
+{% endif %}
+{% endfor %}
+{% if firewall_log_drops %}
+
+        limit rate 10/minute burst 20 packets log prefix "nft-input-drop: " level info
+{% endif %}
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

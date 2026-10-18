@@ -1,0 +1,11 @@
+---
+- name: Restart rootless Docker
+  ansible.builtin.systemd_service:
+    name: docker.service
+    scope: user
+    state: restarted
+    daemon_reload: true
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ docker_user_info.uid }}"

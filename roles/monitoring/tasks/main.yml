@@ -1,0 +1,66 @@
+---
+# ---------------------------------------------------------------------- SMART
+- name: Install smartmontools
+  ansible.builtin.apt:
+    name: smartmontools
+    state: present
+  when: smartd_enabled | bool
+
+# smartd-runner (Debian) runs every script in /etc/smartmontools/run.d/ when
+# smartd reports a problem.
+- name: Configure smartd
+  ansible.builtin.copy:
+    dest: /etc/smartd.conf
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      # All disks: health, attributes and error logs (-a), automatic offline
+      # tests and attribute autosave, self-tests and temperature tracking.
+      DEVICESCAN -a -o on -S on -n standby,q -s {{ smartd_self_tests }} -W {{ smartd_temperature }} -m root -M exec /usr/share/smartmontools/smartd-runner
+    owner: root
+    group: root
+    mode: "0644"
+  when: smartd_enabled | bool
+  notify: Restart smartd
+
+- name: Install the smartd Telegram hook
+  ansible.builtin.copy:
+    src: smartd-telegram.sh
+    dest: /etc/smartmontools/run.d/20telegram
+    owner: root
+    group: root
+    mode: "0755"
+  when: smartd_enabled | bool
+
+- name: Enable smartd
+  ansible.builtin.systemd_service:
+    name: smartmontools
+    enabled: true
+    state: started
+  when: smartd_enabled | bool
+
+# ----------------------------------------------------------------- disk space
+- name: Install the disk space check
+  ansible.builtin.template:
+    src: disk-space-check.sh.j2
+    dest: /usr/local/sbin/disk-space-check
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the disk space service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - disk-space-check.service
+    - disk-space-check.timer
+
+- name: Enable the disk space check
+  ansible.builtin.systemd_service:
+    name: disk-space-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true

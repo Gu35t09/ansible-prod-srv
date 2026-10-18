@@ -1,121 +1,143 @@
-# Alpine Linux Server Setup & Maintenance Ansible Playbook
+# ansible-prod-srv
 
-Questo repository contiene un playbook Ansible completo e modulare per la configurazione iniziale, l'hardening e la manutenzione periodica di un server **Alpine Linux** posizionato dietro un firewall OPNsense.
+Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
----
+This first version covers the server foundations. The applications (Traefik, Vaultwarden, Immich, OpenCloud, Paperless, Technitium), Renovate and the backup come next, each as its own role.
 
-## 🏗️ Struttura del Progetto
+## Layout
 
 ```text
 .
-├── .gitignore                     # Esclude password vault, file temporanei e log locali
-├── ansible.cfg                    # Configurazione Ansible (privilegi doas)
-├── inventory.ini                  # Inventario dei server Alpine target
-├── main.yml                       # Playbook principale
-├── vars/
-│   ├── main.yml                   # Variabili di configurazione generale
-│   ├── vault.yml                  # Variabili riservate/sensibili gestite con Ansible Vault
-│   └── vault.yml.example          # Esempio di file vault in chiaro
-├── tasks/
-│   ├── setup.yaml                 # Configurazione iniziale pacchetti e repository
-│   ├── hardening.yaml             # Hardening SSH e configurazione doas
-│   ├── clamav.yaml                # Installazione ClamAV, clamd daemon e Cron
-│   └── update.yaml                # Aggiornamenti periodici di sistema
-└── templates/
-    ├── clamav_scan_telegram.sh.j2 # Template script di scansione con notifiche Telegram
-    └── sshd_hardening.conf.j2     # Drop-in di hardening OpenSSH (/etc/ssh/sshd_config.d/)
+├── ansible.cfg
+├── requirements.yml                  # ansible.posix, community.general
+├── site.yml                          # the only playbook; areas are selected by tag
+├── inventory/
+│   ├── hosts.ini
+│   └── group_vars/prod_servers/
+│       ├── main.yml                  # site settings: admin user, keys, addresses, VLANs
+│       ├── vault.yml                 # secrets, always encrypted (create it from the example)
+│       └── vault.yml.example
+├── roles/
+│   ├── base/                         # packages, time, journal, unattended-upgrades, needrestart
+│   ├── hardening/                    # admin user, sudo, SSH drop-in, sysctl
+│   ├── network/                      # VLAN trunk, source routing, rollback (tag: network)
+│   ├── firewall_host/                # nftables, inbound deny by default
+│   ├── docker_rootless/              # Docker for a dedicated service user
+│   ├── notify/                       # Telegram helper shared by the other roles
+│   ├── clamav/                       # daemon, scheduled scan, quarantine
+│   ├── monitoring/                   # SMART and disk space alerts
+│   └── update_os/                    # package upgrades and reboot (tag: update-os)
+└── .githooks/pre-commit              # refuses an unencrypted vault.yml
 ```
 
----
+## Roles
 
-## 🔐 Gestione Variabili Sensibili con Ansible Vault
+| Role | What it does |
+| --- | --- |
+| `base` | Hostname, timezone, NTP from OPNsense, persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. |
+| `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t`, kernel and network sysctl hardening. |
+| `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
+| `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 53/80/443 only to the services address; forwarding off; outbound left to OPNsense. |
+| `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
+| `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
+| `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
+| `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
+| `update_os` | `apt dist-upgrade`, reboot only when a newer kernel is waiting or a package asks for it, restart of the rootless daemon after a Docker upgrade. |
 
-I dati riservati come **Bot Token Telegram** e **Chat ID** sono memorizzati nel file `vars/vault.yml`.
+## Tags and Semaphore jobs
 
-> ⚠️ `vars/vault.yml` va committato **solo criptato** (deve iniziare con `$ANSIBLE_VAULT;`). La password del vault (`.vault_pass`) non va mai nel repository ed è esclusa da `.gitignore`.
+| Command | Use |
+| --- | --- |
+| `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
+| `--tags base,hardening,firewall,docker,clamav,monitoring` | One or more areas only. `security` = hardening + firewall. |
+| `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
+| `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
-### Criptare il file vault:
+Both `update-os` and `network` carry the `never` tag, so they run only when asked for by name.
+
+In Semaphore, store the vault password in the Key Store and attach it to the templates. A suggested setup: one template for `site.yml` (manual) and one for `--tags update-os` (scheduled, for example weekly at night).
+
+## First setup
+
+### 1. Install Debian 13
+
+Install from the netinst image with SSH server and no desktop. During the installation:
+
+- create the admin user (the name in `admin_user`) and leave the root password empty, so the user gets sudo;
+- configure a static address on the management network: this is what `ansible_host` points to.
+
+Then copy your key once so Ansible can log in: `ssh-copy-id <admin_user>@<management IP>`.
+
+### 2. Prepare the repository
+
 ```bash
-ansible-vault encrypt vars/vault.yml
+ansible-galaxy collection install -r requirements.yml
+git config core.hooksPath .githooks          # once per clone
+cp inventory/group_vars/prod_servers/vault.yml.example inventory/group_vars/prod_servers/vault.yml
+ansible-vault encrypt inventory/group_vars/prod_servers/vault.yml
+ansible-vault edit inventory/group_vars/prod_servers/vault.yml
 ```
 
-### Modificare un file vault criptato:
+Then edit `inventory/hosts.ini` (management IP and user) and `inventory/group_vars/prod_servers/main.yml`.
+
+### 3. Run it
+
 ```bash
-ansible-vault edit vars/vault.yml
+ansible-playbook site.yml --ask-vault-pass
 ```
 
-### Decriptare temporaneamente per ispezione:
+The first run takes a few minutes: ClamAV downloads its signature database (a few hundred MB) before the daemon can start.
+
+### 4. Move to VLANs
+
+When the switch trunk is ready, fill in `network_links` and run:
+
 ```bash
-ansible-vault decrypt vars/vault.yml
+ansible-playbook site.yml --tags network --ask-vault-pass
 ```
 
----
+The role keeps the current configuration aside, installs the new one and reboots. If Ansible reconnects and the new configuration is in place, it confirms it. If not, after `network_rollback_minutes` (5 by default) the server restores the previous configuration and reboots by itself, and the play fails with a message saying so.
 
-## 🚀 Caratteristiche Principali
+Once the services VLAN is up, set `services_address`, and `ssh_listen_address` to the management IP, then run `--tags security`.
 
-1. **Configurazione Iniziale e Hardening Semplice:**
-   - Abilitazione repository Alpine `community`.
-   - Privilegi elevati via `doas` (senza password) concessi al solo `admin_user`, con validazione della sintassi prima della scrittura.
-   - Accesso SSH limitato tramite drop-in `/etc/ssh/sshd_config.d/00-hardening.conf` validato con `sshd -t`: login `root` disabilitato, solo chiavi SSH, `AllowUsers` limitato ad `admin_user`.
-   - Il playbook si interrompe se `admin_ssh_keys` è vuota o se `ansible_user` è diverso da `admin_user`, per non perdere l'accesso al server.
+## Variables to know
 
-2. **ClamAV & Notifiche Telegram:**
-   - Demone `clamd` e `freshclam` in background per l'aggiornamento continuo delle firme virus in RAM.
-   - Script di scansione (`/usr/local/bin/clamav_scan_telegram.sh`, permessi `0700` perché contiene il token) programmato via `crond` secondo `clamav_scan_schedule_cron` (default: ogni giorno alle 00:00).
-   - Invio automatico di una notifica in testo semplice su Telegram al termine di ogni scansione (`✅ SCANSIONE CLAMAV COMPLETATA - PULITA`, `⚠️ ALLERTA MALWARE CLAMAV` con l'elenco dei file rilevati, o `❌ ERRORE SCANSIONE CLAMAV`). Il token non compare mai nella lista dei processi.
-   - Opzioni personalizzabili in `vars/main.yml`: `notify_only`, `quarantine`, oppure `remove`.
-   - La quarantena (`clamav_quarantine_dir`, default `/root/clamav-quarantine`, permessi `0700`) deve stare fuori dai percorsi scansionati: il playbook lo verifica.
-   - I log `scan_*.log` più vecchi di `clamav_log_retention_days` (default 30) vengono eliminati automaticamente.
+Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every other default is in `roles/<role>/defaults/main.yml`.
 
-3. **Integrazione con Ansible Semaphore:**
-   - In Semaphore, aggiungi la password di Ansible Vault nelle credenziali/environment del Key Store.
-   - I task utilizzano i **Tags** di Ansible per permettere l'esecuzione selettiva su Semaphore:
-     - `--tags setup`: Esegue setup iniziale e pacchetti.
-     - `--tags hardening`: Configura SSH e doas.
-     - `--tags clamav`: Configura antivirus e script notifiche Telegram.
-     - `--tags update`: Esegue gli aggiornamenti di sistema e pacchetti (`apk update && apk upgrade`); `clamd` viene riavviato solo se sono stati aggiornati pacchetti.
-   - I task sono importati con `import_tasks` (statico): è necessario perché i tag vengano ereditati dai task importati.
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `admin_user`, `admin_ssh_keys` | — | The playbook stops if the key list is empty or `ansible_user` differs from `admin_user`. |
+| `mgmt_address`, `services_address` | `ansible_host`, empty | Used by nftables. Empty means "any address". |
+| `ssh_listen_address` | empty | Must equal `ansible_host` when set. |
+| `network_links` | — | One entry per network; exactly one with `default_route: true`; `vlan: null` means untagged. |
+| `docker_user` | `svc-docker` | Owner of the rootless daemon and of the application data. |
+| `docker_rootlesskit_cidr` | empty (`10.0.2.0/24`) | Change it if any network the server talks to uses `10.0.2.0/24`, or replies to those clients get lost. |
+| `clamav_scan_paths` | admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp` | Application data will live under `/srv`. Missing paths are skipped. |
+| `clamav_action_on_detect` | `quarantine` | Or `notify_only`, `remove`. |
+| `disk_space_warn_percent` | `85` | |
+| `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
 
----
+## Working with Docker
 
-## 🛠️ Come Usare il Playbook
+The admin user has no access to the Docker socket. The `docker-svc` wrapper runs the CLI as `svc-docker`:
 
-### 1. Configurazione Variabili e Vault
-- Modifica `vars/main.yml` (es. `admin_user`, `admin_ssh_keys`, `system_timezone`).
-- Configura `vars/vault.yml` con il tuo Token Telegram e Chat ID, quindi cripta il file:
-  ```bash
-  ansible-vault encrypt vars/vault.yml
-  ```
-
-### 2. Configurazione Inventario
-Aggiorna `inventory.ini` con l'indirizzo IP del tuo server Alpine. `ansible_user` deve coincidere con `admin_user`:
-```ini
-[alpine_servers]
-alpine-node-01 ansible_host=192.168.1.100 ansible_user=v
-```
-
-> **Primo avvio (bootstrap):** il playbook usa `doas` per elevare i privilegi, quindi sul server deve già esistere l'utente `admin_user` con la tua chiave SSH, il pacchetto `doas` installato e una regola `permit nopass <admin_user>` in `/etc/doas.d/doas.conf`. Dalla prima esecuzione in poi la configurazione è gestita dal playbook.
-
-### 3. Esecuzione via CLI
-
-**Esecuzione completa chiedendo la password di Ansible Vault:**
 ```bash
-ansible-playbook -i inventory.ini main.yml --ask-vault-pass
+docker-svc ps
+docker-svc compose -f /srv/apps/<app>/compose.yml up -d
 ```
 
-**Esecuzione usando un file password Vault (utile in automazioni/Semaphore):**
-```bash
-ansible-playbook -i inventory.ini main.yml --vault-password-file .vault_pass
-```
+## Outbound access needed
 
-**Esecuzione solo degli aggiornamenti periodici:**
-```bash
-ansible-playbook -i inventory.ini main.yml --tags update --ask-vault-pass
-```
+The server reaches only the destinations allowed on OPNsense. For the roles in this repository:
 
----
+| Destination | Used by |
+| --- | --- |
+| `deb.debian.org`, `security.debian.org` | apt, unattended-upgrades |
+| `download.docker.com` | Docker packages |
+| `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
+| `database.clamav.net` | freshclam |
+| `api.telegram.org` | notifications |
 
-## 🧪 Testing e Verifica dei Servizi
+## Checks
 
-Per la guida completa passo-passo con tutti i comandi necessari per verificare il Playbook Ansible e i componenti del server Alpine Linux (Doas, SSH, ClamAV e test notifiche Telegram con firma EICAR), fai riferimento a:
-👉 **[verify.md](verify.md)**
+[verify.md](verify.md) lists the commands to check each part on the server, including a ClamAV test with the EICAR file.

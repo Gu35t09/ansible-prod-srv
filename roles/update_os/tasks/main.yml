@@ -1,0 +1,95 @@
+---
+# Run on a schedule from Semaphore with --tags update-os. It upgrades the
+# Debian packages (including Docker's) and reboots only when needed.
+# Container images are not touched here: they follow the update-containers tag.
+
+- name: Record the installed package versions
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Keep the Docker version before the upgrade
+  ansible.builtin.set_fact:
+    update_os_docker_before: "{{ ansible_facts['packages']['docker-ce'][0]['version'] | default('') }}"
+
+- name: Upgrade all packages
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    autoremove: true
+    autoclean: true
+  register: update_os_upgrade
+
+- name: Record the package versions after the upgrade
+  ansible.builtin.package_facts:
+    manager: apt
+
+# needrestart (batch mode, kernel only): NEEDRESTART-KSTA 1 = current kernel,
+# 2 = ABI-compatible upgrade pending, 3 = version upgrade pending.
+- name: Check whether a newer kernel is waiting
+  ansible.builtin.command:
+    cmd: needrestart -b -k
+  register: update_os_kernel
+  changed_when: false
+
+- name: Check whether a package requested a reboot
+  ansible.builtin.stat:
+    path: /run/reboot-required
+  register: update_os_reboot_flag
+
+- name: Decide whether to reboot
+  ansible.builtin.set_fact:
+    update_os_needs_reboot: >-
+      {{ (update_os_kernel.stdout | regex_search('NEEDRESTART-KSTA: (\d)', '\1') | default(['1'], true) | first | int > 1)
+         or update_os_reboot_flag.stat.exists }}
+    update_os_docker_after: "{{ ansible_facts['packages']['docker-ce'][0]['version'] | default('') }}"
+
+- name: Report a pending reboot that is not allowed
+  ansible.builtin.debug:
+    msg: "A reboot is required, but update_os_allow_reboot is false: reboot the server manually."
+  when: update_os_needs_reboot | bool and not update_os_allow_reboot | bool
+
+- name: Reboot the server
+  ansible.builtin.reboot:
+    msg: "Rebooting after package upgrades (Ansible update-os)"
+    reboot_timeout: "{{ update_os_reboot_timeout }}"
+  when: update_os_needs_reboot | bool and update_os_allow_reboot | bool
+
+# Without a reboot, an upgraded Docker only takes effect when the rootless
+# daemon restarts. Containers come back through their restart policy.
+- name: Look up the Docker service user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ docker_user }}"
+    fail_key: false
+  when: update_os_docker_after | length > 0
+
+- name: Restart the rootless Docker daemon after a Docker upgrade
+  ansible.builtin.systemd_service:
+    name: docker.service
+    scope: user
+    state: restarted
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+  when:
+    - update_os_docker_after | length > 0
+    - update_os_docker_after != update_os_docker_before
+    - not (update_os_needs_reboot | bool and update_os_allow_reboot | bool)
+    - ansible_facts['getent_passwd'][docker_user] is not none
+
+- name: Check that the rootless Docker daemon is running
+  ansible.builtin.systemd_service:
+    name: docker.service
+    scope: user
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+  register: update_os_docker_state
+  retries: 10
+  delay: 6
+  until: update_os_docker_state.status.ActiveState == 'active'
+  when:
+    - update_os_docker_after | length > 0
+    - ansible_facts['getent_passwd'][docker_user] is not none

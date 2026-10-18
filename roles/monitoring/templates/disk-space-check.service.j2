@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Disk space check with Telegram notification
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/disk-space-check

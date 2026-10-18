@@ -1,0 +1,56 @@
+---
+# ==============================================================================
+# Site-specific settings for the production server.
+# Defaults for every other variable live in roles/<role>/defaults/main.yml.
+# ==============================================================================
+
+# --- System -------------------------------------------------------------------
+server_hostname: "prod-srv"
+system_timezone: "Europe/Rome"
+# Egress is blocked on OPNsense: time comes from the firewall.
+ntp_servers:
+  - "10.0.10.1"
+
+# --- Administrative user ------------------------------------------------------
+# Must match ansible_user in the inventory: it is the only user allowed over SSH
+# (AllowUsers) and in sudo. The playbook stops if this list is empty.
+# The list is exclusive: keys not listed here are removed from the server.
+admin_user: "mattia"
+admin_ssh_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAn6fwLJzRJjFsKK5LVGNTIxrYa9yCg10XO0rQL9JIuw mattia@nixos"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOLPkoGZUGiYdOW2noZwBttL+WMKoP72KuE2bAm6eNMM mattia.vallortigara@newcomm.it"
+
+# --- Addresses ----------------------------------------------------------------
+# Management address: SSH, Ansible, Semaphore.
+mgmt_address: "{{ ansible_host }}"
+# Services address: Traefik and Technitium publish their ports only here.
+# Leave empty until the network role has created the services VLAN.
+services_address: ""
+# Set to the management address to make sshd listen only there. The hardening
+# role refuses any value other than ansible_host.
+ssh_listen_address: ""
+
+# --- Network (applied only with --tags network) ------------------------------
+network_parent_interface: "enp1s0"
+# One entry per network. vlan: null means untagged on the parent interface.
+# Each link gets its own routing table, so replies leave from the VLAN they
+# arrived on. Exactly one link must have default_route: true.
+network_links:
+  - name: management
+    vlan: null
+    address: "10.0.10.10/24"
+    gateway: "10.0.10.1"
+    table: 100
+    default_route: true
+  - name: services
+    vlan: 20
+    address: "10.0.20.10/24"
+    gateway: "10.0.20.1"
+    table: 200
+    default_route: false
+network_dns_servers:
+  - "10.0.10.1"
+
+# --- Notifications ------------------------------------------------------------
+telegram_bot_token: "{{ vault_telegram_bot_token }}"
+telegram_chat_id: "{{ vault_telegram_chat_id }}"

@@ -1,0 +1,92 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# ClamAV scan of the configured paths, with a Telegram report.
+# Exit codes follow ClamAV: 0 clean, 1 threats found, 2 error.
+set -u
+
+ACTION={{ clamav_action_on_detect | quote }}
+QUARANTINE_DIR={{ clamav_quarantine_dir | quote }}
+CONFIGURED_PATHS=({% for path in clamav_scan_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
+NOTIFY_CLEAN={{ clamav_notify_clean | bool | string | lower | quote }}
+LOG_DIR={{ clamav_log_dir | quote }}
+LOG_RETENTION_DAYS={{ clamav_log_retention_days | int }}
+LOG_FILE="${LOG_DIR}/scan_$(date +%Y%m%d_%H%M%S).log"
+HOST=$(hostname)
+
+mkdir -p "$LOG_DIR"
+if [ "$ACTION" = "quarantine" ]; then
+    mkdir -p "$QUARANTINE_DIR" && chmod 700 "$QUARANTINE_DIR"
+fi
+
+# Remove scan logs older than the retention period
+find "$LOG_DIR" -maxdepth 1 -name 'scan_*.log' -mtime +"$LOG_RETENTION_DAYS" -delete
+
+notify() {
+    if ! /usr/local/sbin/notify-telegram "$1" >> "$LOG_FILE" 2>&1; then
+        echo "ERROR: Telegram notification not sent." >> "$LOG_FILE"
+    fi
+}
+
+echo "=== ClamAV scan on $HOST: $(date) ===" > "$LOG_FILE"
+
+# Skip paths that do not exist yet (e.g. /srv before the first application)
+SCAN_PATHS=()
+for path in "${CONFIGURED_PATHS[@]}"; do
+    if [ -e "$path" ]; then
+        SCAN_PATHS+=("$path")
+    else
+        echo "WARNING: $path does not exist, skipped." >> "$LOG_FILE"
+    fi
+done
+
+# clamdscan through the daemon is much faster; clamscan is the fallback.
+if systemctl is-active --quiet clamav-daemon; then
+    SCAN_CMD=(clamdscan --multiscan --fdpass)
+else
+    echo "WARNING: clamav-daemon is not running, using clamscan (slower)." >> "$LOG_FILE"
+    SCAN_CMD=(clamscan --recursive)
+fi
+
+if [ "$ACTION" = "quarantine" ]; then
+    SCAN_CMD+=("--move=$QUARANTINE_DIR")
+elif [ "$ACTION" = "remove" ]; then
+    SCAN_CMD+=(--remove=yes)
+fi
+
+"${SCAN_CMD[@]}" "${SCAN_PATHS[@]}" >> "$LOG_FILE" 2>&1
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 1 ]; then
+    infected=$(grep -i "Infected files:" "$LOG_FILE" | awk '{print $3}')
+    found=$(grep "FOUND$" "$LOG_FILE" | head -n 20)
+    notify "⚠️ CLAMAV: MALWARE DETECTED
+
+🖥️ Server: ${HOST}
+🦠 Infected files: ${infected}
+🛠️ Action: ${ACTION}
+📁 Scanned paths: ${SCAN_PATHS[*]}
+
+📋 Detected files (max 20):
+${found}
+
+Full log: ${LOG_FILE}"
+elif [ $EXIT_CODE -gt 1 ]; then
+    notify "❌ CLAMAV: SCAN ERROR
+
+The scheduled scan on ${HOST} failed with exit code ${EXIT_CODE}.
+Log: ${LOG_FILE}"
+else
+    echo "Scan completed. No threats found." >> "$LOG_FILE"
+    if [ "$NOTIFY_CLEAN" = "true" ]; then
+        summary=$(grep -i -A 10 "SCAN SUMMARY" "$LOG_FILE" | tail -n 10)
+        notify "✅ CLAMAV: SCAN CLEAN
+
+🖥️ Server: ${HOST}
+📁 Scanned paths: ${SCAN_PATHS[*]}
+
+📋 Summary:
+${summary:-$(tail -n 10 "$LOG_FILE")}"
+    fi
+fi
+
+exit $EXIT_CODE

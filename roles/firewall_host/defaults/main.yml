@@ -1,0 +1,12 @@
+---
+ssh_port: 22
+mgmt_address: ""
+services_address: ""
+# Source networks allowed to reach SSH. Empty: any source (OPNsense filters).
+firewall_ssh_allowed_sources: []
+# Ports opened on the services address (Traefik, Technitium).
+firewall_service_ports:
+  tcp: [53, 80, 443]
+  udp: [53]
+# Log dropped inbound packets (rate limited) to the journal.
+firewall_log_drops: true
