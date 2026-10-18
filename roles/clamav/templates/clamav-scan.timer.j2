@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Scheduled ClamAV scan
+
+[Timer]
+OnCalendar={{ clamav_scan_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

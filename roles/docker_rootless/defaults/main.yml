@@ -1,0 +1,38 @@
+---
+# Dedicated service user that runs the rootless daemon. No login shell and no
+# sudo: access to its Docker socket is not tied to the admin account.
+docker_user: "svc-docker"
+docker_user_home: "/home/{{ docker_user }}"
+
+docker_apt_key_url: "https://download.docker.com/linux/debian/gpg"
+# SHA-256 of the key file (fingerprint 9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88).
+docker_apt_key_checksum: "sha256:1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570"
+docker_apt_repo_url: "https://download.docker.com/linux/debian"
+
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - docker-ce-rootless-extras
+  - uidmap
+  - slirp4netns
+  - dbus-user-session
+
+# Lowest port unprivileged processes may bind (53 covers DNS, 80 and 443).
+docker_unprivileged_port_start: 53
+
+# Port driver: slirp4netns keeps the real client source IP, which Traefik and
+# Technitium need. The default "builtin" driver replaces it.
+docker_rootlesskit_net: "slirp4netns"
+docker_rootlesskit_port_driver: "slirp4netns"
+# Internal network of rootlesskit. Empty keeps the rootlesskit default,
+# 10.0.2.0/24: change it if any network the server talks to uses that range,
+# or replies to those clients never leave the daemon's namespace.
+docker_rootlesskit_cidr: ""
+
+docker_daemon_config:
+  log-driver: "json-file"
+  log-opts:
+    max-size: "10m"
+    max-file: "3"

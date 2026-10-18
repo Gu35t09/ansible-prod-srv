@@ -1,0 +1,7 @@
+---
+network_parent_interface: ""
+network_links: []
+network_dns_servers: []
+# Minutes the server waits after the reboot before restoring the previous
+# configuration, unless Ansible reconnects and confirms the new one.
+network_rollback_minutes: 5

@@ -1,0 +1,73 @@
+---
+- name: Check the prerequisites that keep access to the server
+  ansible.builtin.assert:
+    that:
+      - admin_user is defined and admin_user | length > 0
+      - admin_ssh_keys | length > 0
+      - (ansible_user | default(admin_user)) == admin_user
+      - ssh_listen_address | length == 0 or ssh_listen_address == ansible_host
+    fail_msg: >-
+      admin_ssh_keys needs at least one key, ansible_user must match admin_user
+      and ssh_listen_address, when set, must equal ansible_host. Otherwise key-only
+      SSH, AllowUsers and the sudo rule would lock Ansible out of the server.
+    quiet: true
+
+- name: Create the administrative user
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: sudo
+    append: true
+    shell: /bin/bash
+    state: present
+
+- name: Install the authorized SSH keys (exclusive)
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    key: "{{ admin_ssh_keys | join('\n') }}"
+    exclusive: true
+    state: present
+
+# Passwordless: Ansible and Semaphore use sudo non-interactively and the user
+# logs in with keys only. The rule covers admin_user alone.
+- name: Allow the administrative user to use sudo without a password
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-admin
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      {{ admin_user }} ALL=(ALL:ALL) NOPASSWD: ALL
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+
+# The drop-in is validated with "sshd -t" before it is written, so a mistake
+# never replaces a working configuration. Debian 13 already includes
+# /etc/ssh/sshd_config.d/*.conf at the top of sshd_config, and the first
+# occurrence of each directive wins.
+- name: Configure the OpenSSH hardening drop-in
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: sshd -t -f %s
+  notify: Restart ssh
+
+- name: Make sure sshd_config includes the drop-in directory
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf'
+    line: "Include /etc/ssh/sshd_config.d/*.conf"
+    insertbefore: BOF
+    validate: sshd -t -f %s
+  notify: Restart ssh
+
+- name: Apply kernel and network hardening settings
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-hardening.conf
+    state: present
+    reload: true
+  loop: "{{ hardening_sysctl | dict2items }}"

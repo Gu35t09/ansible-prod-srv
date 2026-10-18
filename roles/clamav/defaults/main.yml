@@ -1,0 +1,25 @@
+---
+clamav_enabled: true
+# systemd OnCalendar expression (see "man systemd.time"). Default: daily at 00:00.
+clamav_scan_on_calendar: "*-*-* 00:00:00"
+# Scan user data only. Image layers live in the Docker service user's home
+# (~/.local/share/docker) and are left out on purpose; application data will be
+# bind-mounted under /srv. Missing paths are skipped with a warning.
+clamav_scan_paths:
+  - "/home/{{ admin_user }}"
+  - "/etc"
+  - "/srv"
+  - "/tmp"
+  - "/var/tmp"
+clamav_log_dir: /var/log/clamav
+clamav_log_retention_days: 30
+# Action on detection:
+#   notify_only  send the report only
+#   quarantine   move infected files to clamav_quarantine_dir and notify
+#   remove       delete infected files and notify
+clamav_action_on_detect: "quarantine"
+# Must be outside clamav_scan_paths, or quarantined files would be found again
+# at every scan. The role checks it.
+clamav_quarantine_dir: /root/clamav-quarantine
+# Notify also when a scan finds nothing.
+clamav_notify_clean: true

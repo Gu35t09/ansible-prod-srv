@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic disk space check
+
+[Timer]
+OnCalendar={{ disk_space_check_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

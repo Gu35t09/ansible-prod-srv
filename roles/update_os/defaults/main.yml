@@ -1,0 +1,5 @@
+---
+# Reboot automatically when the kernel was upgraded or a package asks for it.
+update_os_allow_reboot: true
+update_os_reboot_timeout: 600
+docker_user: "svc-docker"

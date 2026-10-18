@@ -1,0 +1,5 @@
+---
+notify_telegram_enabled: true
+telegram_bot_token: ""
+telegram_chat_id: ""
+notify_env_file: /etc/homelab/notify.env

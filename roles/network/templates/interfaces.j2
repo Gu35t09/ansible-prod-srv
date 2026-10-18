@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+# Single NIC on an 802.1Q trunk, one address per VLAN.
+# Every link has its own routing table and a rule "from <address>", so replies
+# always leave through the VLAN the request arrived on (OPNsense drops
+# asymmetric traffic).
+
+source /etc/network/interfaces.d/*
+
+auto lo
+iface lo inet loopback
+
+{% set untagged = network_links | selectattr('vlan', 'none') | list %}
+{% if untagged | length == 0 %}
+auto {{ network_parent_interface }}
+iface {{ network_parent_interface }} inet manual
+
+{% endif %}
+{% for link in network_links | sort(attribute='table') %}
+{% set ifname = network_parent_interface if link.vlan is none else network_parent_interface ~ '.' ~ link.vlan %}
+{% set ip = link.address | regex_replace('/.*$', '') %}
+# {{ link.name }}{{ '' if link.vlan is none else ' (VLAN ' ~ link.vlan ~ ')' }}
+auto {{ ifname }}
+iface {{ ifname }} inet static
+    address {{ link.address }}
+{% if link.default_route %}
+    gateway {{ link.gateway }}
+{% endif %}
+    # Copy the connected subnet and the default route into the link's table
+    post-up ip route replace $(ip -4 route show dev $IFACE scope link proto kernel | head -n1 | cut -d' ' -f1) dev $IFACE src {{ ip }} table {{ link.table }}
+    post-up ip route replace default via {{ link.gateway }} dev $IFACE table {{ link.table }}
+    post-up ip rule add from {{ ip }} table {{ link.table }} priority {{ link.table }}
+    pre-down ip rule del from {{ ip }} table {{ link.table }} priority {{ link.table }} || true
+
+{% endfor %}

@@ -1,0 +1,85 @@
+---
+- name: Check that the quarantine is outside the scanned paths
+  ansible.builtin.assert:
+    that:
+      - not ((clamav_quarantine_dir ~ '/').startswith(item.rstrip('/') ~ '/'))
+    fail_msg: >-
+      clamav_quarantine_dir ({{ clamav_quarantine_dir }}) is inside the scanned path
+      {{ item }}: quarantined files would be detected at every scan.
+    quiet: true
+  loop: "{{ clamav_scan_paths }}"
+
+- name: Install ClamAV
+  ansible.builtin.apt:
+    name:
+      - clamav
+      - clamav-daemon
+      - clamav-freshclam
+    state: present
+
+- name: Create the quarantine directory (root only)
+  ansible.builtin.file:
+    path: "{{ clamav_quarantine_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# freshclam downloads the signature database (a few hundred MB) when it first
+# starts; clamd refuses to start until the database is there.
+- name: Start the signature updater
+  ansible.builtin.systemd_service:
+    name: clamav-freshclam
+    enabled: true
+    state: started
+
+# clamav-daemon has a start condition on both main and daily: if either is
+# missing, systemd silently skips the start.
+- name: Wait for the signature database (main and daily)
+  ansible.builtin.find:
+    paths: /var/lib/clamav
+    patterns: "main.cvd,main.cld,daily.cvd,daily.cld"
+  register: clamav_db
+  until: clamav_db.files | map(attribute='path') | map('basename') | map('regex_replace', '\\..*$', '') | unique | list | length == 2
+  retries: 40
+  delay: 15
+
+- name: Start the ClamAV daemon
+  ansible.builtin.systemd_service:
+    name: clamav-daemon
+    enabled: true
+    state: started
+
+- name: Check that the ClamAV daemon is running
+  ansible.builtin.systemd_service:
+    name: clamav-daemon
+  register: clamav_daemon_state
+  until: clamav_daemon_state.status.ActiveState == 'active'
+  retries: 10
+  delay: 6
+
+- name: Install the scan script
+  ansible.builtin.template:
+    src: clamav-scan.sh.j2
+    dest: /usr/local/sbin/clamav-scan
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the scan service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - clamav-scan.service
+    - clamav-scan.timer
+
+- name: Enable the scheduled scan
+  ansible.builtin.systemd_service:
+    name: clamav-scan.timer
+    enabled: "{{ clamav_enabled | bool }}"
+    state: "{{ 'started' if clamav_enabled | bool else 'stopped' }}"
+    daemon_reload: true

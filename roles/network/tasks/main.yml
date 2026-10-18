@@ -1,0 +1,159 @@
+---
+# Applying a new network configuration can cut SSH access. The previous
+# configuration is kept aside and a boot-time service restores it after
+# network_rollback_minutes, unless Ansible reconnects and confirms the change.
+
+- name: Check the network definition
+  ansible.builtin.assert:
+    that:
+      - network_parent_interface in ansible_facts['interfaces']
+      - network_links | length > 0
+      - network_links | selectattr('default_route') | list | length == 1
+      - network_links | selectattr('vlan', 'none') | list | length <= 1
+      - network_links | map(attribute='table') | unique | list | length == network_links | length
+      - ansible_host in (network_links | map(attribute='address') | map('regex_replace', '/.*$', '') | list)
+    fail_msg: >-
+      network_parent_interface must exist on the host ({{ ansible_facts['interfaces'] | join(', ') }}),
+      exactly one link needs default_route: true, at most one link can be untagged,
+      routing tables must be unique, and ansible_host ({{ ansible_host }}) must be the
+      address of one of the links, or Ansible cannot reconnect after the reboot.
+    quiet: true
+
+# The role writes /etc/network/interfaces (ifupdown, the Debian installer
+# default). A second network manager would fight over the same interfaces.
+- name: Gather the service states
+  ansible.builtin.service_facts:
+
+- name: Check that the server uses ifupdown only
+  ansible.builtin.assert:
+    that:
+      - "'networking.service' in ansible_facts['services']"
+      - ansible_facts['services']['systemd-networkd.service']['status'] | default('not-found') not in ['enabled', 'enabled-runtime']
+      - ansible_facts['services']['NetworkManager.service']['status'] | default('not-found') not in ['enabled', 'enabled-runtime']
+    fail_msg: >-
+      The network role manages ifupdown (/etc/network/interfaces): install ifupdown
+      and disable systemd-networkd and NetworkManager first.
+    quiet: true
+
+- name: Install the rollback script
+  ansible.builtin.template:
+    src: network-rollback.sh.j2
+    dest: /usr/local/sbin/network-rollback
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the rollback service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/network-rollback.service
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      [Unit]
+      Description=Restore the previous network configuration unless confirmed
+      ConditionPathExists=/etc/network/interfaces.rollback
+      After=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/sbin/network-rollback
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render the new network configuration
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces.new
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Validate the new network configuration
+  ansible.builtin.command:
+    cmd: ifquery --interfaces=/etc/network/interfaces.new --list
+  changed_when: false
+
+- name: Compare the new configuration with the current one
+  ansible.builtin.command:
+    cmd: cmp -s /etc/network/interfaces.new /etc/network/interfaces
+  register: network_cmp
+  changed_when: false
+  failed_when: network_cmp.rc > 1
+
+- name: Write the DNS resolvers
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      {% for server in network_dns_servers %}
+      nameserver {{ server }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: network_dns_servers | length > 0
+
+- name: Apply the new configuration with a rollback safety net
+  when: network_cmp.rc == 1
+  block:
+    - name: Keep the current configuration for the rollback
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: /etc/network/interfaces.rollback
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable the rollback service for the next boot
+      ansible.builtin.systemd_service:
+        name: network-rollback.service
+        enabled: true
+        daemon_reload: true
+
+    - name: Install the new configuration
+      ansible.builtin.copy:
+        src: /etc/network/interfaces.new
+        dest: /etc/network/interfaces
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reboot to apply the network configuration
+      ansible.builtin.reboot:
+        msg: "Applying the new network configuration (Ansible)"
+        reboot_timeout: 240
+
+    # If the change failed and the rollback restored the old configuration
+    # before Ansible gave up waiting, the reconnection alone proves nothing.
+    - name: Check that the server booted with the new configuration
+      ansible.builtin.command:
+        cmd: cmp -s /etc/network/interfaces.new /etc/network/interfaces
+      changed_when: false
+      failed_when: false
+      register: network_applied
+
+    - name: Stop if the server rolled back
+      ansible.builtin.fail:
+        msg: >-
+          The server restored its previous network configuration: the new one did
+          not let Ansible reconnect within {{ network_rollback_minutes }} minutes.
+          Check network_links and the switch trunk; the attempted configuration is
+          in /etc/network/interfaces.new and the rollback is logged in the journal
+          (journalctl -t network-rollback).
+      when: network_applied.rc != 0
+
+    - name: Confirm the new configuration (cancel the rollback)
+      ansible.builtin.file:
+        path: /etc/network/interfaces.rollback
+        state: absent
+
+    - name: Stop and disable the rollback service
+      ansible.builtin.systemd_service:
+        name: network-rollback.service
+        state: stopped
+        enabled: false

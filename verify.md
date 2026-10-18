@@ -1,185 +1,109 @@
-# 🧪 Guida di Verifica e Testing del Playbook Ansible e del Server Alpine Linux
+# Verification
 
-Questa guida fornisce una procedura passo-passo con i comandi esatti da eseguire per verificare il corretto funzionamento dell'intero sistema: dalla validazione del Playbook Ansible fino al test dei singoli servizi configurati sul server **Alpine Linux** (Doas, SSH, ClamAV e notifiche Telegram).
+Commands to check each part of the configuration. Run the server-side ones as the admin user over SSH.
 
----
-
-## 📋 Indice
-1. [Verifica del Playbook Ansible (Da locale / Controller)](#1-verifica-del-playbook-ansible-da-locale--controller)
-2. [Verifica Accesso SSH e Elevazione Privilegi Doas](#2-verifica-accesso-ssh-e-elevazione-privilegi-doas)
-3. [Verifica Hardening OpenSSH](#3-verifica-hardening-openssh)
-4. [Verifica ClamAV e Demoni (`clamd`, `freshclam`)](#4-verifica-clamav-e-demoni-clamd-freshclam)
-5. [Test Notifiche Telegram con File di Test Malware (EICAR)](#5-test-notifiche-telegram-con-file-di-test-malware-eicar)
-
----
-
-## 1. Verifica del Playbook Ansible (Da locale / Controller)
-
-Prima di applicare le modifiche o per testare le sintassi locali, esegui i seguenti comandi dalla radice della repository.
-
-### 1.1 Verifica Sintattica del Playbook
-Verifica che la sintassi YAML e le direttive Ansible siano corrette:
+## 1. Playbook
 
 ```bash
-ansible-playbook -i inventory.ini main.yml --syntax-check
+ansible-playbook site.yml --syntax-check
+ansible-playbook site.yml --check --diff --ask-vault-pass    # dry run
+ansible-playbook site.yml --ask-vault-pass                   # a second run must report changed=0
 ```
-**Output atteso:**
-`playbook: main.yml` (senza errori di sintassi).
 
-### 1.2 Esecuzione in Modalità Check (Dry-Run)
-Simula l'esecuzione del playbook senza apportare modifiche reali al server target:
+## 2. SSH and sudo
 
 ```bash
-ansible-playbook -i inventory.ini main.yml --check --ask-vault-pass
+sudo whoami                       # root, without a password
+sudo sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers|allowtcpforwarding|maxauthtries) '
 ```
 
-### 1.3 Esecuzione di Tag Specifici
-Se desideri testare solo un modulo specifico (es. solo ClamAV):
+Expected: `permitrootlogin no`, `passwordauthentication no`, `allowusers <admin_user>` and, once `ssh_listen_address` is set, `listenaddress <management IP>:22`.
+
+## 3. Automatic updates
 
 ```bash
-# Esempio: Esecuzione del solo tag clamav
-ansible-playbook -i inventory.ini main.yml --tags clamav --ask-vault-pass
+sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'
 ```
 
----
+Expected: only `codename=trixie-security,label=Debian-Security`.
 
-## 2. Verifica Accesso SSH e Elevazione Privilegi Doas
-
-Connettiti via SSH al server Alpine Linux con l'utente amministrativo configurato (`admin_user` in `vars/main.yml`, es. `v`).
-
-### 2.1 Connessione SSH tramite Chiave Pubblica
-```bash
-ssh -p 22 v@<IP_DEL_SERVER>
-```
-
-### 2.2 Test Elevazione Privilegi con `doas`
-Verifica che l'utente possa elevarsi a `root` senza richiedere password (come configurato in `/etc/doas.d/doas.conf`):
+## 4. Network (after `--tags network`)
 
 ```bash
-doas whoami
+ip -br address
+ip rule | grep -E '^(100|200):'
+ip route show table 100
+ip route show table 200
+systemctl is-enabled network-rollback.service    # disabled once the change is confirmed
 ```
-**Output atteso:**
-`root`
 
----
+Each address has a `from <address> lookup <table>` rule, and each table holds its subnet and its default route.
 
-## 3. Verifica Hardening OpenSSH
-
-### 3.1 Verifica dello Stato del Servizio SSH
-```bash
-doas rc-service sshd status
-```
-**Output atteso:**
-`status: started`
-
-### 3.2 Verifica Direttive di Sicurezza
-L'hardening è nel drop-in `/etc/ssh/sshd_config.d/00-hardening.conf`. Controlla la configurazione **effettiva** di sshd (dopo l'unione di tutti i file):
+## 5. Firewall
 
 ```bash
-doas sshd -T | grep -E "^(port|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication|allowusers|maxauthtries) "
-```
-**Output atteso:**
-```text
-port 22
-permitrootlogin no
-pubkeyauthentication yes
-passwordauthentication no
-kbdinteractiveauthentication no
-maxauthtries 3
-allowusers v
+sudo nft list ruleset
+journalctl -k -g nft-input-drop --since -1h      # dropped inbound packets
 ```
 
----
-
-## 4. Verifica ClamAV e Demoni (`clamd`, `freshclam`)
-
-### 4.1 Verifica dello Stato dei Servizi ClamAV
-```bash
-doas rc-service clamd status
-doas rc-service freshclam status
-```
-**Output atteso:**
-Entrambi i servizi devono risultare in stato `started`.
-
-### 4.2 Verifica del Cron Job per la Scansione Schedulata
-Verifica che il demone `crond` sia attivo e che il job sia presente nel crontab di root:
+## 6. Rootless Docker
 
 ```bash
-doas rc-service crond status
-doas crontab -l
+systemctl is-enabled docker.service docker.socket containerd.service   # all disabled
+docker-svc info --format '{{.SecurityOptions}}'                         # contains name=rootless
 ```
-**Output atteso:**
-`status: started` e la riga (con lo schedule di default `clamav_scan_schedule_cron: "0 0 * * *"`):
-`0 0 * * * /usr/local/bin/clamav_scan_telegram.sh > /dev/null 2>&1`
 
-### 4.3 Esecuzione Manuale dello Script di Scansione
-Esegui manualmente lo script generato da Ansible:
+Real client IP check (from a machine on another network):
 
 ```bash
-doas /usr/local/bin/clamav_scan_telegram.sh
+docker-svc run -d --rm --name whoami -p <services IP>:80:80 traefik/whoami:v1.10
+curl http://<services IP>/ | grep RemoteAddr      # shows the client's address, not 10.0.2.x
+docker-svc stop whoami
 ```
 
-Verifica il file di log appena generato in `/var/log/clamav/`:
+## 7. Notifications
 
 ```bash
-doas cat $(ls -t /var/log/clamav/scan_*.log | head -n 1)
+sudo notify-telegram "Test from $(hostname)"; echo "exit code $?"
 ```
-**Output atteso:**
-1. Log dettagliato della scansione terminante con `Scansione completata. Nessuna minaccia rilevata.`
-2. Ricezione di una notifica su Telegram con l'esito:
-   > ✅ SCANSIONE CLAMAV COMPLETATA - PULITA
-   >
-   > 🖥️ Server: alpine-node-01
-   > 🦠 File infetti rilevati: 0
-   > 📁 Percorsi scansionati: /home/v /etc /var /srv /tmp
 
-Se la notifica non arriva, nel log è presente la riga `ERRORE: invio della notifica Telegram fallito.` con il dettaglio dell'errore di curl.
+Exit code 0 and a message on Telegram. Code 1 means Telegram refused the request (check token and chat ID), 2 that the credentials are missing.
 
----
-
-## 5. Test Notifiche Telegram con File di Test Malware (EICAR)
-
-Per verificare che lo script rilevi correttamente le minacce e invii l'avviso formattato su Telegram, utilizziamo la stringa di test standard **EICAR** (un file di test innocuo riconosciuto da tutti gli antivirus).
-
-### 5.1 Creazione del File di Test EICAR
-Crea un file temporaneo con la firma EICAR in un percorso scansionato da ClamAV (es. `/home/v`):
+## 8. ClamAV
 
 ```bash
-echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | doas tee /home/v/eicar.com
+systemctl is-active clamav-daemon clamav-freshclam
+systemctl list-timers clamav-scan.timer
 ```
 
-### 5.2 Esecuzione della Scansione e Verifica Notifica Telegram
-Lancia lo script di scansione:
+Test with the EICAR file, harmless and detected by every antivirus:
 
 ```bash
-doas /usr/local/bin/clamav_scan_telegram.sh
+echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > ~/eicar.com
+sudo systemctl start clamav-scan.service
+sudo cat "$(sudo ls -t /var/log/clamav/scan_*.log | head -n 1)"
 ```
 
-**Esito atteso:**
-1. Lo script termina con codice di uscita `1` (indicante minaccia trovata).
-2. Riceverai immediatamente un messaggio sul tuo canale/chat Telegram configurato, simile a:
-
-> ⚠️ ALLERTA MALWARE CLAMAV ⚠️
->
-> 🖥️ Server: alpine-node-01
-> 🦠 File infetti rilevati: 1
-> 🛠️ Azione eseguita: quarantine
-> 📁 Percorsi scansionati: /home/v /etc /var /srv /tmp
->
-> 📋 File rilevati (max 20):
-> /home/v/eicar.com: Eicar-Signature FOUND
-
-Con `clamav_action_on_detect: quarantine` (default) il file viene spostato in `/root/clamav-quarantine`.
-
-### 5.3 Pulizia del File di Test
-Al termine della verifica, rimuovi il file di test EICAR (dalla quarantena, se l'azione è `quarantine`):
+Expected: `eicar.com: Eicar-Signature FOUND`, the file moved to `/root/clamav-quarantine` and a "MALWARE DETECTED" message on Telegram. Clean up:
 
 ```bash
-doas rm -f /home/v/eicar.com /root/clamav-quarantine/eicar.com
+sudo rm -f /root/clamav-quarantine/eicar.com
 ```
 
-Verifica che rieseguendo la scansione non vengano più rilevate minacce:
+## 9. SMART and disk space
 
 ```bash
-doas /usr/local/bin/clamav_scan_telegram.sh
+sudo smartctl -H /dev/nvme0n1                    # or /dev/sda
+sudo systemctl start disk-space-check.service
+systemctl list-timers disk-space-check.timer
 ```
+
+To test the alert path, lower `disk_space_warn_percent` below the current usage, run `--tags monitoring`, start the check, then restore the value.
+
+## 10. Update job
+
+```bash
+ansible-playbook site.yml --tags update-os --ask-vault-pass
+```
+
+A reboot happens only when needed. To test the reboot path: `sudo touch /run/reboot-required` on the server, then run the job. After the reboot the play checks that the rootless Docker daemon is running again.

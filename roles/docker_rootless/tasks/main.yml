@@ -1,0 +1,162 @@
+---
+# ------------------------------------------------------------------ packages
+- name: Create the APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the Docker repository key
+  ansible.builtin.get_url:
+    url: "{{ docker_apt_key_url }}"
+    dest: /etc/apt/keyrings/docker.asc
+    checksum: "{{ docker_apt_key_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Docker repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.sources
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      Types: deb
+      URIs: {{ docker_apt_repo_url }}
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: stable
+      Architectures: {{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else ansible_facts['architecture'] }}
+      Signed-By: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_repo
+
+- name: Install Docker and the rootless prerequisites
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: "{{ docker_repo is changed }}"
+
+# The packages enable the rootful daemon: only the rootless one must run.
+- name: Stop and disable the rootful Docker daemon
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - docker.socket
+    - docker.service
+    - containerd.service
+
+- name: Remove the rootful Docker socket
+  ansible.builtin.file:
+    path: /var/run/docker.sock
+    state: absent
+
+- name: Let unprivileged processes bind ports from {{ docker_unprivileged_port_start }}
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ docker_unprivileged_port_start }}"
+    sysctl_file: /etc/sysctl.d/60-rootless-docker.conf
+    state: present
+    reload: true
+
+# -------------------------------------------------------------- service user
+- name: Create the Docker service user
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    home: "{{ docker_user_home }}"
+    shell: /usr/sbin/nologin
+    password: "!"
+    state: present
+  register: docker_user_info
+
+- name: Check the subordinate UID and GID ranges of the service user
+  ansible.builtin.command:
+    cmd: "grep -q '^{{ docker_user }}:' {{ item }}"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  changed_when: false
+
+- name: Keep the service user's systemd instance running without a login
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ docker_user }}"
+    creates: "/var/lib/systemd/linger/{{ docker_user }}"
+
+- name: Wait for the service user's session bus
+  ansible.builtin.wait_for:
+    path: "/run/user/{{ docker_user_info.uid }}/bus"
+    timeout: 60
+
+# ------------------------------------------------------- rootless daemon unit
+- name: Create the service user's configuration directories
+  ansible.builtin.file:
+    path: "{{ docker_user_home }}/{{ item }}"
+    state: directory
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0700"
+  loop:
+    - .config
+    - .config/docker
+    - .config/systemd
+    - .config/systemd/user
+
+- name: Write the rootless daemon configuration
+  ansible.builtin.copy:
+    dest: "{{ docker_user_home }}/.config/docker/daemon.json"
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0600"
+  notify: Restart rootless Docker
+
+- name: Write the rootless daemon user unit
+  ansible.builtin.template:
+    src: docker.service.j2
+    dest: "{{ docker_user_home }}/.config/systemd/user/docker.service"
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0644"
+  notify: Restart rootless Docker
+
+- name: Enable and start the rootless daemon
+  ansible.builtin.systemd_service:
+    name: docker.service
+    scope: user
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ docker_user_info.uid }}"
+
+- name: Install the docker-svc wrapper for the admin user
+  ansible.builtin.template:
+    src: docker-svc.j2
+    dest: /usr/local/bin/docker-svc
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Apply pending daemon changes before the check
+  ansible.builtin.meta: flush_handlers
+
+- name: Check that the daemon runs rootless
+  ansible.builtin.command:
+    cmd: docker info --format '{{ "{{" }}json .SecurityOptions{{ "}}" }}'
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ docker_user_info.uid }}"
+    DOCKER_HOST: "unix:///run/user/{{ docker_user_info.uid }}/docker.sock"
+  register: docker_info
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: docker_info.rc == 0
+  failed_when: docker_info.rc != 0 or 'rootless' not in docker_info.stdout

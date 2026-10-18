@@ -1,0 +1,41 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Sends a plain-text Telegram message.
+# Usage: notify-telegram "message"   or   echo "message" | notify-telegram
+# Exit codes: 0 sent or notifications disabled, 1 send failed, 2 not configured.
+set -u
+
+ENV_FILE={{ notify_env_file | quote }}
+
+if [ ! -r "$ENV_FILE" ]; then
+    echo "notify-telegram: $ENV_FILE not readable" >&2
+    exit 2
+fi
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+
+[ "${NOTIFY_ENABLED:-false}" = "true" ] || exit 0
+
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+    echo "notify-telegram: token or chat ID missing" >&2
+    exit 2
+fi
+
+if [ $# -gt 0 ]; then
+    message="$*"
+else
+    message=$(cat)
+fi
+# Telegram rejects messages longer than 4096 characters.
+message="${message:0:4000}"
+
+# Plain text, no parse_mode: file names with _ or ` cannot break the message.
+# The URL with the token goes to curl on stdin (-K -), not as an argument,
+# so it never shows up in the process list.
+if ! printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+    | curl -fsS --max-time 20 -o /dev/null -K - \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${message}"; then
+    echo "notify-telegram: sending failed" >&2
+    exit 1
+fi
