@@ -138,6 +138,10 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | `database.clamav.net` | freshclam |
 | `api.telegram.org` | notifications |
 
+## Documentation
+
+[docs/walkthrough.md](docs/walkthrough.md) explains every role task by task: what it does, why, and how to check it.
+
 ## Checks
 
 [verify.md](verify.md) lists the commands to check each part on the server, including a ClamAV test with the EICAR file.
