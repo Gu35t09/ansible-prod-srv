@@ -8,6 +8,9 @@ ListenAddress {{ ssh_listen_address }}
 {% endif %}
 PermitRootLogin no
 
+# Logins must stay in the journal. VERBOSE adds the key fingerprint.
+LogLevel {{ ssh_log_level }}
+
 # Public key authentication only
 PubkeyAuthentication yes
 PasswordAuthentication no

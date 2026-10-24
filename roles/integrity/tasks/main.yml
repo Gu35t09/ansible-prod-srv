@@ -1,0 +1,30 @@
+---
+# Periodic checks for the signs left by Ebury and similar OpenSSH backdoors:
+# NTP off, sshd logging lowered, libraries no package installed, preloaded
+# libraries, strangers in the ssh.service cgroup, Ebury's sockets.
+
+- name: Install the integrity check
+  ansible.builtin.template:
+    src: integrity-check.sh.j2
+    dest: /usr/local/sbin/integrity-check
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the integrity check service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - integrity-check.service
+    - integrity-check.timer
+
+- name: Enable the integrity check
+  ansible.builtin.systemd_service:
+    name: integrity-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true

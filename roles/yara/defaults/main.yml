@@ -1,0 +1,51 @@
+---
+yara_enabled: true
+# systemd OnCalendar expression. Default: daily at 01:00, after the ClamAV scan
+# starts and before the SMART self-tests.
+yara_scan_on_calendar: "*-*-* 01:00:00"
+
+# Files: system binaries and libraries (backdoored sshd, libkeyutils, rootkits),
+# places where droppers and miners land, and the application data. /home
+# includes the Docker service user's image and container layers.
+yara_scan_paths:
+  - /usr/bin
+  - /usr/sbin
+  - /usr/lib
+  - /usr/lib64
+  - /usr/libexec
+  - /usr/local
+  - /etc
+  - /root
+  - /home
+  - /srv
+  - /tmp
+  - /var/tmp
+  - /var/spool/cron
+  - /dev/shm
+# Never scanned: the rules themselves (they contain the strings they look
+# for) and the ClamAV quarantine, which holds known malware on purpose.
+yara_exclude_paths:
+  - /etc/yara
+  - "{{ clamav_quarantine_dir | default('/root/clamav-quarantine') }}"
+# Larger files are skipped (ML models, databases, media).
+yara_max_file_size_mb: 64
+yara_threads: 2
+
+# Memory: the OpenSSH processes (Ebury and SSHDoor live inside them). Processes
+# running from /tmp, /var/tmp, /dev/shm, memfd or a deleted file are added at
+# every scan.
+yara_process_names:
+  - sshd
+  - sshd-session
+  - sshd-auth
+# Rule files left out of the memory scan. ESET's SSHDoor rules are written for
+# files on disk: in memory they also see the loaded libraries and match a
+# clean sshd.
+yara_memory_exclude_rules:
+  - eset/sshdoor.yar
+
+yara_log_dir: /var/log/yara
+yara_log_retention_days: 30
+# Notify also when a scan finds nothing (the daily ClamAV message already shows
+# that the server and the notifications work).
+yara_notify_clean: false

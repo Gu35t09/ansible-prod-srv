@@ -6,10 +6,12 @@
       - admin_ssh_keys | length > 0
       - (ansible_user | default(admin_user)) == admin_user
       - ssh_listen_address | length == 0 or ssh_listen_address == ansible_host
+      - ssh_log_level in ['INFO', 'VERBOSE']
     fail_msg: >-
       admin_ssh_keys needs at least one key, ansible_user must match admin_user
       and ssh_listen_address, when set, must equal ansible_host. Otherwise key-only
       SSH, AllowUsers and the sudo rule would lock Ansible out of the server.
+      ssh_log_level must be INFO or VERBOSE: lower levels hide logins.
     quiet: true
 
 - name: Create the administrative user

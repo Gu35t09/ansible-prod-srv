@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic integrity check
+
+[Timer]
+OnCalendar={{ integrity_check_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

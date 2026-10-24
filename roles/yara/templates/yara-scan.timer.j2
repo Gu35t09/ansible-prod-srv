@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Scheduled YARA scan
+
+[Timer]
+OnCalendar={{ yara_scan_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

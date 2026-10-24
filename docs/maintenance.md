@@ -29,6 +29,8 @@ Contents:
 | ClamAV scan | Daily at 00:00 | Telegram |
 | SMART self-tests | Short daily at 02:00, long on Saturdays at 03:00 | Telegram on problems only |
 | Disk space check | Every 15 minutes | Telegram when a threshold is crossed |
+| Integrity check (NTP, sshd logging, libraries, Ebury) | Every 15 minutes | Telegram when the findings change, then daily while they last |
+| YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
 
 Nothing in this list reboots the server or updates container images. Those happen only through the `update-os` job and, later, `update-containers`.
 
@@ -70,7 +72,8 @@ Nothing in this list reboots the server or updates container images. Those happe
 
 - Check the ClamAV quarantine and empty it once each file has been examined (see [Malware detected](#malware-detected)).
 - Test that notifications work end to end: `sudo notify-telegram "Quarterly test from $(hostname)"`.
-- Run the EICAR test from `verify.md` section 8.
+- Run the EICAR test from `verify.md` section 8, and the YARA one from section 12.
+- Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
 - Check that the copy of the emergency secrets is still readable and up to date (backup password, Ansible Vault password, the admin user's console password).
 
 ### Every year
@@ -135,6 +138,51 @@ Check in this order:
 2. Did the scan run? `systemctl list-timers clamav-scan.timer` and `journalctl -u clamav-scan.service --since today`.
 3. Does Telegram work? `sudo notify-telegram test; echo $?` (1 = Telegram refused or unreachable, 2 = credentials missing). Check that `api.telegram.org` is allowed on OPNsense and that the token is still valid.
 
+### Integrity check alert
+
+Message: `🚨 INTEGRITY CHECK: <n> FINDING(S)`. Each line says what was found. Most of these never happen on a healthy server, so **treat them as an intrusion until you have an explanation**, and do not type any password on the server while you look (Ebury records them; the admin login uses keys and sudo needs no password).
+
+| Finding | Harmless explanation to rule out | If there is none |
+| --- | --- | --- |
+| NTP turned off, timesyncd not running | Someone ran `timedatectl set-ntp false` while testing | Run the playbook (`--tags base`), then look for who did it: `journalctl _COMM=sudo` and `journalctl -u ssh` |
+| Clock not synchronized | OPNsense NTP down, or `ntp_servers` wrong (check it matches the gateway of the management network) | `timedatectl timesync-status` |
+| sshd LogLevel below INFO, or `-q` in the start options | None: the playbook sets `VERBOSE` | [Suspected compromise](#suspected-compromise) |
+| setuid/setgid shared library; shared object not installed by any package | A library installed by hand (then add it to `integrity_lib_allowlist`) | [Suspected compromise](#suspected-compromise). This is exactly how Ebury 1.8.3 hides |
+| setuid/setgid file, or file with no owner, in a library directory | A package removed without purge left a file | `dpkg -S <path>`; if no package claims it and you did not put it there, [Suspected compromise](#suspected-compromise) |
+| `/etc/ld.so.preload` or `LD_PRELOAD` set | None on this server | [Suspected compromise](#suspected-compromise) |
+| Unexpected process in `ssh.service` | None | [Suspected compromise](#suspected-compromise) |
+| Ebury socket found | None | [Suspected compromise](#suspected-compromise) |
+
+Look at the details with a clean shell, which defuses Ebury's userland rootkit:
+
+```bash
+H=1 I=1 LD_PRELOAD=: LD_DEBUG=: bash
+journalctl -u integrity-check.service --since -1h
+```
+
+When the cause is gone, the next run sends "✅ INTEGRITY CHECK: ALL CLEAR".
+
+### YARA match
+
+Message: `🚨 YARA: <n> MATCH(ES)`. Each line is a rule name and a file, or a rule name and a process (`PID <n> (<program>)`). Nothing was moved or deleted.
+
+1. Read the log named in the message: `sudo cat /var/log/yara/scan_<date>.log`.
+2. The rule name says what it is: `Linux_Trojan_Ebury_*`, `libkeyutils_with_ctor` or `Ebury_v1_7_crypto` mean Ebury; `Linux_Rootkit_*` a rootkit; `*_Cryptominer_*` a miner; `Multi_EICAR_*` the test file.
+3. Decide:
+   - **A match in memory, on a system binary or library, or in `/etc`**: [Suspected compromise](#suspected-compromise).
+   - **A match inside `~svc-docker/.local/share/docker`**: find which container or image owns the layer (the directory name after `overlay2/`):
+     ```bash
+     docker-svc inspect --format '{{.Name}} {{.GraphDriver.Data.UpperDir}}' $(docker-svc ps -aq) | grep <layer id>
+     docker-svc image inspect --format '{{.RepoTags}} {{.GraphDriver.Data.LowerDir}} {{.GraphDriver.Data.UpperDir}}' $(docker-svc images -q) | grep <layer id>
+     ```
+     A container layer means something wrote the file at run time: stop the container and treat the application as compromised. An image layer means the image shipped it: report it upstream and pin a clean version.
+   - **A match in an upload under `/srv`**: like ClamAV, delete it and find out where it came from.
+   - **A false positive** (a legitimate file you can identify): note the rule name; if it repeats, remove that rule file with the next refresh (`ELASTIC_EXCLUDE` in `scripts/update-yara-rules.sh`) rather than excluding the path.
+
+### YARA scan error
+
+Message: `❌ YARA: SCAN ERROR`. Usually the rules do not compile after a refresh: run `sudo yara-scan --compile-only` and read the error, then fix or drop the rule on the laptop and run the playbook with `--tags yara`.
+
 ### SMART warning
 
 Message: `💽 SMART WARNING`. It contains the failure type (`SMARTD_FAILTYPE`) and the details.
@@ -197,6 +245,16 @@ Then update the password in Semaphore's Key Store and in the offline copy of the
 ### Change the scan schedule, the paths or the disk threshold
 
 Edit the corresponding variable in `group_vars` (see the defaults in `roles/clamav/defaults/main.yml` and `roles/monitoring/defaults/main.yml`), then run `--tags clamav` or `--tags monitoring`.
+
+### Refresh the YARA rules
+
+On the laptop, which can reach GitHub:
+
+1. Find the latest commits of [eset/malware-ioc](https://github.com/eset/malware-ioc/commits/master) and [elastic/protections-artifacts](https://github.com/elastic/protections-artifacts/commits/main).
+2. Update `ESET_COMMIT` and `ELASTIC_COMMIT` in `scripts/update-yara-rules.sh`, then run it.
+3. Review `git diff --stat roles/yara/files/rules` (new and removed rules) and commit.
+4. `ansible-playbook site.yml --tags yara --ask-vault-pass`. The play compiles the rules on the server and fails if one is broken.
+5. Run a scan by hand (`sudo systemctl start yara-scan.service`) to see whether the new rules flag anything.
 
 ### Change the network (VLANs, addresses)
 
@@ -337,8 +395,8 @@ This is also the yearly drill, on a lab VM.
 ### Suspected compromise
 
 1. Isolate the server: on OPNsense, block all traffic from and to its VLANs, except your management access.
-2. Do not reboot and do not delete anything yet: logs and files are evidence.
-3. Copy what you need for the analysis to another machine: the journal (`journalctl -o export`), the ClamAV logs, the quarantine, the list of processes and connections (`ps auxf`, `ss -tupan`).
+2. Do not reboot and do not delete anything yet: logs and files are evidence. Do not type passwords on the server (Ebury records them); work in a clean shell: `H=1 I=1 LD_PRELOAD=: LD_DEBUG=: bash`.
+3. Copy what you need for the analysis to another machine: the journal (`journalctl -o export`), the ClamAV and YARA logs, the quarantine, the list of processes and connections (`ps auxf`, `ss -tupan`), and any file named in an integrity or YARA alert. A clean check from the running system proves little: if you can, examine the disk from a rescue system or an image.
 4. Rotate every secret the server held: the Telegram token, the Cloudflare token and the application passwords. Rotate the SSH keys as well if the admin account was involved.
 5. Rebuild from scratch ([Rebuild the server](#rebuild-the-server)) and restore data from a backup **older** than the compromise.
 
@@ -358,4 +416,7 @@ This is also the yearly drill, on a lab VM.
 | Network rollback | `journalctl -t network-rollback` |
 | SMART | `journalctl -u smartmontools`, `sudo smartctl -a <device>` |
 | Disk space alert state | `/var/lib/disk-space-check/` |
+| Integrity check | `journalctl -u integrity-check.service`, state in `/var/lib/integrity-check/state` |
+| YARA scans | `/var/log/yara/scan_*.log`, `journalctl -u yara-scan.service` |
+| Time synchronization | `timedatectl timesync-status` |
 | Errors in the last 24 hours | `journalctl -p err --since -24h` |

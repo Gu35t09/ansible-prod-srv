@@ -1,0 +1,55 @@
+---
+# systemd OnCalendar expression for the integrity check. Default: every 15 minutes.
+integrity_check_on_calendar: "*:0/15"
+# While the findings stay the same, repeat the alert after this many hours.
+integrity_renotify_hours: 24
+# After a boot, NTP gets this many minutes to synchronize before it is reported.
+integrity_ntp_grace_minutes: 30
+
+# Library directories searched for setuid/setgid files, files with no owner,
+# and shared objects that no package installed (how Ebury 1.8.3 hides).
+# /lib and /lib64 are symlinks to these on Debian 13.
+integrity_lib_dirs:
+  - /usr/lib
+  - /usr/lib64
+  - /usr/libexec
+  - /usr/local/lib
+# Shell patterns of shared objects allowed outside the packages (e.g. a library
+# installed by hand under /usr/local/lib). Keep it empty unless you know why.
+integrity_lib_allowlist: []
+
+# The only programs allowed inside ssh.service. Logged-in sessions move to the
+# user's own slice, so anything else there is suspect (Ebury runs a fake
+# rsyslogd or systemd-udevd in this cgroup).
+integrity_ssh_cgroup_allowed:
+  - /usr/sbin/sshd
+  - /usr/lib/openssh/sshd-session
+  - /usr/lib/openssh/sshd-auth
+
+# Abstract UNIX sockets opened by Ebury, from ESET's detect_ebury.sh
+# (BSD 2-Clause, updated October 2026 for version 1.8.3).
+integrity_ebury_sockets:
+  - "/proc/udevd"
+  - "/tmp/dbus-0m9eDQpdXZ"
+  - "/tmp/dbus-ZP7tFO4xsL"
+  - "/tmp/dbus-Xrga2cOewg"
+  - "/tmp/dbus-9XZXkmdfpN"
+  - "/tmp/dbus-n3UUkeqEZG"
+  - "/tmp/dbus-luzG4UqDt8"
+  - "/tmp/dbus-kZ8VEtJDOJ"
+  - "/tmp/dbus-VdyGBaqZws"
+  - "/tmp/dbus-vBWUDhHCHp"
+  - "/run/systemd/journal/dlog"
+  - "/run/systemd/log-wuO3nuFBHN"
+  - "/run/systemd/journal-YAjXO8luqOa"
+  - "/run/systemd/log-90zMvYX7uL"
+  - "/run/systemd/log"
+  - "UDEV-4kAmkRW3"
+  - "/dev/event-E4LgEFWIcy"
+  - "/dev/stats-MxPAxNpy3x"
+  - "event-CRbBwZlvXa"
+  - "event-wHPG5cMU8A"
+  - "event-hyAa2VL3WE"
+  - "event-lqG1FF5dwG"
+  - "event-te6Enx7MQS"
+  - "event-0YsOG9WSOE"

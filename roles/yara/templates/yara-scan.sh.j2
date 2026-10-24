@@ -1,0 +1,168 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# YARA scan of files and of the memory of selected processes, with a Telegram
+# report. The rules in /etc/yara/rules are compiled at every run (it takes
+# under a second), one namespace per source directory.
+# Usage: yara-scan                 scan and report
+#        yara-scan --compile-only  only check that the rules compile
+# Exit codes: 0 clean, 1 matches found, 2 error.
+set -u
+export LC_ALL=C
+
+RULES_DIR=/etc/yara/rules
+MEMORY_EXCLUDE=({% for rule in yara_memory_exclude_rules %}{{ rule | quote }}{{ ' ' if not loop.last }}{% endfor %})
+CONFIGURED_PATHS=({% for path in yara_scan_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
+EXCLUDE_PATHS=({% for path in yara_exclude_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
+PROCESS_NAMES=({% for name in yara_process_names %}{{ name | quote }}{{ ' ' if not loop.last }}{% endfor %})
+MAX_SIZE_MB={{ yara_max_file_size_mb | int }}
+THREADS={{ yara_threads | int }}
+NOTIFY_CLEAN={{ yara_notify_clean | bool | string | lower | quote }}
+LOG_DIR={{ yara_log_dir | quote }}
+LOG_RETENTION_DAYS={{ yara_log_retention_days | int }}
+HOST=$(hostname)
+# Jinja stops here: the rest is plain bash, where array lengths look like Jinja comments.
+{% raw %}
+
+# Under /run, never scanned: the compiled rules would match themselves.
+WORK=$(mktemp -d /run/yara-scan.XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+
+# Compiles every rule file, or every one not excluded from the memory scan.
+compile() {
+    local output=$1 mode=$2 file relative excluded args=()
+    while IFS= read -r -d '' file; do
+        relative=${file#"$RULES_DIR"/}
+        if [ "$mode" = memory ]; then
+            for excluded in "${MEMORY_EXCLUDE[@]}"; do
+                [ "$relative" = "$excluded" ] && continue 2
+            done
+        fi
+        args+=("${relative%%/*}:${file}")
+    done < <(find "$RULES_DIR" -mindepth 2 -maxdepth 2 -name '*.yar' -print0 | sort -z)
+    if [ ${#args[@]} -eq 0 ]; then
+        echo "yara-scan: no rules in $RULES_DIR" >&2
+        return 1
+    fi
+    yarac -w "${args[@]}" "$output"
+}
+
+if [ "${1:-}" = "--compile-only" ]; then
+    compile "$WORK/files.yarc" files && compile "$WORK/memory.yarc" memory
+    exit $?
+fi
+
+mkdir -p "$LOG_DIR"
+find "$LOG_DIR" -maxdepth 1 -name 'scan_*.log' -mtime +"$LOG_RETENTION_DAYS" -delete
+LOG_FILE="${LOG_DIR}/scan_$(date +%Y%m%d_%H%M%S).log"
+
+notify() {
+    if ! /usr/local/sbin/notify-telegram "$1" >> "$LOG_FILE" 2>&1; then
+        echo "ERROR: Telegram notification not sent." >> "$LOG_FILE"
+    fi
+}
+
+fail() {
+    echo "ERROR: $1" >> "$LOG_FILE"
+    notify "❌ YARA: SCAN ERROR
+
+The scheduled scan on ${HOST} failed: $1
+Log: ${LOG_FILE}"
+    exit 2
+}
+
+echo "=== YARA scan on $HOST: $(date) ===" > "$LOG_FILE"
+
+if ! compile "$WORK/files.yarc" files >> "$LOG_FILE" 2>&1 \
+    || ! compile "$WORK/memory.yarc" memory >> "$LOG_FILE" 2>&1; then
+    fail "the rules in $RULES_DIR do not compile."
+fi
+
+# ---------------------------------------------------------------------- files
+SCAN_PATHS=()
+for path in "${CONFIGURED_PATHS[@]}"; do
+    if [ -e "$path" ]; then
+        SCAN_PATHS+=("$path")
+    else
+        echo "WARNING: $path does not exist, skipped." >> "$LOG_FILE"
+    fi
+done
+
+# find builds the list, so excluded trees and other filesystems are skipped
+# and the size limit applies to every file.
+prune=()
+for path in "${EXCLUDE_PATHS[@]}"; do
+    prune+=(-path "$path" -o)
+done
+if [ ${#prune[@]} -gt 0 ]; then
+    unset 'prune[-1]'
+    find "${SCAN_PATHS[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f -size -"${MAX_SIZE_MB}"M -print > "$WORK/files" 2>> "$LOG_FILE"
+else
+    find "${SCAN_PATHS[@]}" -xdev -type f -size -"${MAX_SIZE_MB}"M -print > "$WORK/files" 2>> "$LOG_FILE"
+fi
+file_count=$(wc -l < "$WORK/files")
+echo "Files to scan: $file_count (paths: ${SCAN_PATHS[*]})" >> "$LOG_FILE"
+
+# Unreadable or vanished files are logged by YARA and do not stop the scan;
+# a non-zero exit code means YARA itself failed.
+yara -C -w -p "$THREADS" --scan-list "$WORK/files.yarc" "$WORK/files" > "$WORK/file_matches" 2> "$WORK/file_errors"
+rc=$?
+{
+    cat "$WORK/file_matches"
+    echo "File errors (unreadable or vanished files): $(wc -l < "$WORK/file_errors")"
+    head -n 50 "$WORK/file_errors"
+} >> "$LOG_FILE"
+[ $rc -eq 0 ] || fail "yara exited with code $rc on the file scan."
+
+# --------------------------------------------------------------------- memory
+pids=()
+for name in "${PROCESS_NAMES[@]}"; do
+    while read -r pid; do pids+=("$pid"); done < <(pgrep -x "$name")
+done
+# Programs started from world-writable places or from memory are what
+# droppers and miners look like.
+for exe_link in /proc/[0-9]*/exe; do
+    exe=$(readlink "$exe_link" 2>/dev/null) || continue
+    if [[ $exe =~ ^/(tmp|var/tmp|dev/shm)/ || $exe == /memfd:* || $exe == *" (deleted)" ]]; then
+        pid=${exe_link#/proc/}
+        pids+=("${pid%/exe}")
+    fi
+done
+
+: > "$WORK/memory_matches"
+mapfile -t pids < <(printf '%s\n' "${pids[@]}" | grep -E '^[0-9]+$' | sort -un)
+for pid in "${pids[@]}"; do
+    [ "$pid" = "$$" ] && continue
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+    # A process that exits during the scan is not an error.
+    yara -C -w "$WORK/memory.yarc" "$pid" 2>/dev/null \
+        | while read -r rule _; do echo "$rule PID $pid ($exe)"; done >> "$WORK/memory_matches"
+done
+echo "Processes scanned: ${#pids[@]}" >> "$LOG_FILE"
+cat "$WORK/memory_matches" >> "$LOG_FILE"
+
+# --------------------------------------------------------------------- report
+matches=$(cat "$WORK/file_matches" "$WORK/memory_matches")
+if [ -n "$matches" ]; then
+    count=$(wc -l <<< "$matches")
+    notify "🚨 YARA: ${count} MATCH(ES)
+
+🖥️ Server: ${HOST}
+📁 Files scanned: ${file_count}, processes: ${#pids[@]}
+
+📋 Matches (rule, then file or process; max 20):
+$(head -n 20 <<< "$matches")
+
+Full log: ${LOG_FILE}
+Nothing was moved or deleted. See the maintenance guide, \"YARA match\"."
+    exit 1
+fi
+
+echo "Scan completed. No matches." >> "$LOG_FILE"
+if [ "$NOTIFY_CLEAN" = "true" ]; then
+    notify "✅ YARA: SCAN CLEAN
+
+🖥️ Server: ${HOST}
+📁 Files scanned: ${file_count}, processes: ${#pids[@]}"
+fi
+exit 0
+{% endraw %}
