@@ -25,6 +25,7 @@ services:
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
       - ./data:/data
+      - ./logs:/logs
     tmpfs:
       - /tmp
     networks:

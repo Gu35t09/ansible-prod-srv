@@ -5,6 +5,9 @@ traefik_image: "docker.io/library/traefik:v3.7.16@sha256:c8a121e4bb1347e8fd52657
 
 docker_user: "svc-docker"
 traefik_dir: /srv/docker/system/traefik
+# traefik.log and access.log in <traefik_dir>/logs, rotated daily by
+# logrotate; kept this many days (and in the nightly backup, under /srv).
+traefik_log_retention_days: 30
 
 # One wildcard certificate for the domain and its first-level subdomains.
 # Every service gets <name>.<traefik_domain>; the internal names never show

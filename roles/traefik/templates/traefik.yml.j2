@@ -4,10 +4,14 @@ global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
+# Both logs go to files on the host (./logs), so they survive the container
+# being recreated; logrotate rotates them.
 log:
   level: INFO
+  filePath: /logs/traefik.log
 # Every request, with the real client IP (slirp4netns port driver).
-accessLog: {}
+accessLog:
+  filePath: /logs/access.log
 
 api:
   dashboard: true

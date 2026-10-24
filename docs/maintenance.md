@@ -364,7 +364,7 @@ Read the Semaphore output, then:
 
 Symptoms: the browser shows Traefik's default certificate, or `TLS` errors on every service. Traefik renews 30 days before expiry, so a failing renewal leaves weeks to react.
 
-1. `docker-svc logs traefik 2>&1 | grep -i acme | tail`
+1. `sudo grep -i acme /srv/docker/system/traefik/logs/traefik.log | tail`
 2. Common causes:
    - `api.cloudflare.com` or `acme-v02.api.letsencrypt.org` not allowed on OPNsense;
    - the token expired or lacks *Zone → Zone → Read* or *Zone → DNS → Edit* on the zone;
@@ -481,6 +481,6 @@ This is also the yearly drill, on a lab VM.
 | Integrity check | `journalctl -u integrity-check.service`, state in `/var/lib/integrity-check/state` |
 | YARA scans | `/var/log/yara/scan_*.log`, `journalctl -u yara-scan.service` |
 | Time synchronization | `timedatectl timesync-status` |
-| Traefik | `docker-svc logs traefik`, the dashboard on `https://proxy.greyroom.net` |
+| Traefik | `/srv/docker/system/traefik/logs/traefik.log` (errors, certificates), `access.log` (requests), the dashboard on `https://proxy.greyroom.net` |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |
 | Errors in the last 24 hours | `journalctl -p err --since -24h` |

@@ -39,6 +39,16 @@
     - { path: "{{ traefik_dir }}/dynamic", owner: root, mode: "0750" }
     # Certificates (acme.json) and the Cloudflare token: the service user only.
     - { path: "{{ traefik_dir }}/data", owner: "{{ docker_user }}", mode: "0700" }
+    - { path: "{{ traefik_dir }}/logs", owner: "{{ docker_user }}", mode: "0750" }
+
+# copytruncate: Traefik keeps writing to the same file, no signal needed.
+- name: Rotate the Traefik logs
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/traefik
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Write the Cloudflare token
   ansible.builtin.copy:

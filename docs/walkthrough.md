@@ -694,13 +694,14 @@ It sits in `/srv/docker/system/traefik/`:
 | `dynamic/` | Routes, middlewares, TLS options; watched, changes apply without a restart |
 | `data/acme.json` | Certificates and the Let's Encrypt account key (created by Traefik) |
 | `data/cloudflare-dns-api-token` | The token, mounted as a secret |
+| `logs/traefik.log`, `logs/access.log` | Traefik's own log and one line per request |
 
-`compose.yml`, `traefik.yml` and `dynamic/` belong to root with group `svc-docker` (0640/0750): the container reads them and cannot change them. `data/` belongs to `svc-docker`, mode 0700.
+`compose.yml`, `traefik.yml` and `dynamic/` belong to root with group `svc-docker` (0640/0750): the container reads them and cannot change them. `data/` (0700) and `logs/` (0750) belong to `svc-docker`.
 
 **Check the Traefik settings** / **Look up the Docker service user** / **Check that rootless Docker is configured**
 Stops if the domain, the Cloudflare token or the dashboard users are missing, or if `svc-docker` does not exist yet (run `--tags docker` first).
 
-**Create the Traefik directories** / **Write the Cloudflare token** / **Write the static configuration** / **Write the dashboard route, middlewares and TLS options** / **Write the compose file**
+**Create the Traefik directories** / **Rotate the Traefik logs** / **Write the Cloudflare token** / **Write the static configuration** / **Write the dashboard route, middlewares and TLS options** / **Write the compose file**
 The files above. A change to the token or to the static configuration notifies **Restart Traefik**.
 
 **Start Traefik**
@@ -714,7 +715,7 @@ The files above. A change to the token or to the static configuration notifies *
 - **Hardening**: read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped except binding ports, `no-new-privileges`. In rootless Docker, root inside the container is `svc-docker` on the host.
 - **Ports 80 and 443 on `services_address` only.** Port 80 only redirects to HTTPS.
 - **For every router on `websecure`**: HSTS for a year, including subdomains, and `nosniff`. TLS 1.2 or later; `sniStrict` refuses names Traefik has no certificate for.
-- **The access log** goes to the container log (capped by `daemon.json`), with the real client IP thanks to the slirp4netns port driver.
+- **Logs on disk**: `logs/traefik.log` and `logs/access.log` (one line per request, with the real client IP thanks to the slirp4netns port driver). In the container log they would be lost whenever the container is recreated, at every update. `/etc/logrotate.d/traefik` rotates them daily with `copytruncate` and keeps `traefik_log_retention_days` (30) compressed files; being under `/srv`, they are also in the nightly backup. `docker-svc logs traefik` shows only what Traefik prints before it opens its log files.
 - **Dashboard** on `proxy.<domain>`, behind basic authentication with bcrypt hashes from the vault. It shows the routes and their errors, and changes nothing.
 
 ### Adding a service (for the application roles)
@@ -736,7 +737,7 @@ The files above. A change to the token or to the static configuration notifies *
    ```
 3. Add the name to the internal DNS.
 
-Check: `docker-svc logs traefik`, the dashboard, and `curl -I https://proxy.greyroom.net` from a client (401 without a password).
+Check: `sudo tail /srv/docker/system/traefik/logs/traefik.log`, the dashboard, and `curl -sI https://proxy.greyroom.net/dashboard/` from a client (401 without a password).
 
 ---
 
@@ -800,7 +801,8 @@ Container images are **not** updated here: they will follow the `update-containe
 | `~svc-docker/.config/systemd/user/docker.service` | docker_rootless | Rootless daemon |
 | `/usr/local/bin/docker-svc` | docker_rootless | Wrapper for the admin |
 | `/srv/docker/{system,app}/` | docker_rootless | Compose files and data of the containers |
-| `/srv/docker/system/traefik/` | traefik | Compose file, configuration, certificates, Cloudflare token |
+| `/srv/docker/system/traefik/` | traefik | Compose file, configuration, certificates, Cloudflare token, logs |
+| `/etc/logrotate.d/traefik` | traefik | Daily rotation of the Traefik logs |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -888,7 +890,7 @@ The `traefik` templates were rendered by Ansible and run with Docker Compose (po
 | Test | Result |
 | --- | --- |
 | Start with `--wait` | Healthy; the only error is the expected ACME failure (fake token) |
-| HTTP | 301 to HTTPS |
+| HTTP | Permanent redirect to HTTPS (301 for GET, 308 for other methods) |
 | Dashboard without password, with the right one, with a wrong one | 401, 200, 401 |
 | Response headers | HSTS (1 year, subdomains) and `nosniff` |
 | Unknown host name, TLS 1.1 | 404, refused |
