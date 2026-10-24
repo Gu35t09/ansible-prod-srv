@@ -1,0 +1,74 @@
+# {{ ansible_managed }}
+# Static configuration: read at startup only.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# Both logs go to files on the host (./logs), so they survive the container
+# being recreated; logrotate rotates them.
+log:
+  level: INFO
+  filePath: /logs/traefik.log
+# Every request, with the real client IP (slirp4netns port driver).
+# addInternals: also the dashboard (api@internal), so failed logins show up.
+accessLog:
+  filePath: /logs/access.log
+  addInternals: true
+
+api:
+  dashboard: true
+
+# Internal only (not published): used by the container health check.
+ping:
+  entryPoint: ping
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    http:
+      middlewares:
+        - secure-headers@file
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: "{{ traefik_domain }}"
+            sans:
+              - "*.{{ traefik_domain }}"
+  ping:
+    address: ":8082"
+    # The health check runs every 30 seconds: keep it out of the access log.
+    observability:
+      accessLogs: false
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+{% if traefik_acme_email | length > 0 %}
+      email: "{{ traefik_acme_email }}"
+{% endif %}
+      storage: /data/acme.json
+      caServer: "{{ traefik_acme_ca_server }}"
+      keyType: EC256
+      dnsChallenge:
+        provider: cloudflare
+{% if traefik_acme_resolvers | length > 0 %}
+        resolvers:
+{% for resolver in traefik_acme_resolvers %}
+          - "{{ resolver }}"
+{% endfor %}
+{% endif %}
+        propagation:
+          # The authoritative name servers are not reachable (egress filtered).
+          disableANSChecks: true

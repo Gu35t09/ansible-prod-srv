@@ -1,0 +1,56 @@
+# {{ ansible_managed }}
+{% set bind = (traefik_bind_address ~ ':') if traefik_bind_address | length > 0 else '' %}
+name: traefik
+
+services:
+  traefik:
+    image: {{ traefik_image }}
+    container_name: traefik
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "{{ bind }}80:80"
+      - "{{ bind }}443:443"
+    environment:
+      CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare_dns_api_token
+    secrets:
+      - cloudflare_dns_api_token
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./data:/data
+      - ./logs:/logs
+    tmpfs:
+      - /tmp
+    # default: outbound to Let's Encrypt and Cloudflare. proxy-<name>: one
+    # internal network per service (traefik_networks).
+    networks:
+      - default
+{% for name in traefik_networks %}
+      - proxy-{{ name }}
+{% endfor %}
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+{% if traefik_networks | length > 0 %}
+# Created by the role; each service joins its own (external: true).
+networks:
+{% for name in traefik_networks %}
+  proxy-{{ name }}:
+    external: true
+{% endfor %}
+{% endif %}
+
+secrets:
+  cloudflare_dns_api_token:
+    file: ./data/cloudflare-dns-api-token

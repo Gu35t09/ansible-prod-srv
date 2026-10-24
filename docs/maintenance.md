@@ -2,7 +2,7 @@
 
 How to keep the production server healthy: what runs by itself, what to do by hand and when, how to react to each notification, and how to recover when something breaks.
 
-For what each task does, see [walkthrough.md](walkthrough.md). For check commands, see [../verify.md](../verify.md).
+For what each task does, see [walkthrough.md](walkthrough.md). For check commands, see [../verify.md](../verify.md). For operating the containers, see [containers.md](containers.md).
 
 All server-side commands run as the admin user over SSH (through WireGuard).
 
@@ -297,6 +297,10 @@ To put data back in place, stop the application first, restore into a temporary 
 
 To keep a copy away from the house, you can rotate two labelled disks: each starts with `backup --init` and from then on gets backed up whenever it is plugged in.
 
+### Change the Traefik dashboard password or the Cloudflare token
+
+Update `vault_traefik_dashboard_users` (new htpasswd line, see the README) or `vault_cloudflare_dns_api_token`, then `ansible-playbook site.yml --tags traefik --ask-vault-pass`. A new token restarts Traefik; a new password applies without a restart. Revoke the old token at Cloudflare.
+
 ### Change the backup password or the S3 key
 
 - **S3 key**: create the new key at the provider, update the vault, run `--tags backup`, revoke the old key.
@@ -355,6 +359,18 @@ Read the Semaphore output, then:
 | Upgrade all packages | Repository unreachable, or dpkg interrupted | Check egress on OPNsense (`deb.debian.org`, `security.debian.org`, `download.docker.com`). On the server: `sudo dpkg --configure -a`, then `sudo apt update`. |
 | Reboot the server | The server did not come back within 10 minutes | Check the console. Usually a slow boot or a disk check; if it does not boot, see [Recovery](#7-recovery). |
 | Check that the rootless Docker daemon is running | Daemon not starting after the upgrade | See [Rootless Docker does not start](#rootless-docker-does-not-start). |
+
+### No certificate, or the certificate does not renew
+
+Symptoms: the browser shows Traefik's default certificate, or `TLS` errors on every service. Traefik renews 30 days before expiry, so a failing renewal leaves weeks to react.
+
+1. `sudo grep -i acme /srv/docker/system/traefik/logs/traefik.log | tail`
+2. Common causes:
+   - `api.cloudflare.com` or `acme-v02.api.letsencrypt.org` not allowed on OPNsense;
+   - the token expired or lacks *Zone → Zone → Read* or *Zone → DNS → Edit* on the zone;
+   - propagation check timing out: the internal resolver cached the missing record. Wait for the negative TTL, or flush the Unbound cache;
+   - Let's Encrypt rate limits after many attempts: use the staging CA (`traefik_acme_ca_server`) while testing.
+3. After fixing, `docker-svc compose -f /srv/docker/system/traefik/compose.yml restart`.
 
 ### Rootless Docker does not start
 
@@ -465,5 +481,6 @@ This is also the yearly drill, on a lab VM.
 | Integrity check | `journalctl -u integrity-check.service`, state in `/var/lib/integrity-check/state` |
 | YARA scans | `/var/log/yara/scan_*.log`, `journalctl -u yara-scan.service` |
 | Time synchronization | `timedatectl timesync-status` |
+| Traefik | `/srv/docker/system/traefik/logs/traefik.log` (errors, certificates), `access.log` (requests), the dashboard on `https://proxy.greyroom.net` |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |
 | Errors in the last 24 hours | `journalctl -p err --since -24h` |

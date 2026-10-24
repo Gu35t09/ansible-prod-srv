@@ -55,6 +55,15 @@ network_dns_servers:
 telegram_bot_token: "{{ vault_telegram_bot_token }}"
 telegram_chat_id: "{{ vault_telegram_chat_id }}"
 
+# --- Traefik --------------------------------------------------------------------
+# Wildcard certificate for the domain; the dashboard is proxy.<domain>.
+# Point the names to services_address on the internal DNS (Unbound/Technitium).
+traefik_domain: "greyroom.net"
+cloudflare_dns_api_token: "{{ vault_cloudflare_dns_api_token | default('') }}"
+traefik_dashboard_users: "{{ vault_traefik_dashboard_users | default([]) }}"
+# One entry per service behind Traefik (network proxy-<name>), e.g. vaultwarden.
+traefik_networks: []
+
 # --- Backup (restic) -----------------------------------------------------------
 # Copy 1: USB disk formatted with this filesystem label (see the README).
 backup_usb_label: "backup-usb"

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+{{ traefik_dir }}/logs/*.log {
+    su {{ docker_user }} {{ docker_user }}
+    daily
+    rotate {{ traefik_log_retention_days | int }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

@@ -164,3 +164,27 @@ sudo rm -rf /tmp/restore /tmp/restore-s3
 ```
 
 To test the failure message, unplug the USB disk and start the backup: `❌ BACKUP FAILED` with "USB disk not connected", and the S3 copy still saved.
+
+## 14. Traefik
+
+On the server:
+
+```bash
+docker-svc ps --filter name=traefik --format '{{.Names}} {{.Status}}'    # Up ... (healthy)
+sudo grep -iE 'error|acme' /srv/docker/system/traefik/logs/traefik.log | tail   # no errors once the certificate is issued
+sudo tail -n 3 /srv/docker/system/traefik/logs/access.log                    # one line per HTTPS request (dashboard included), real client IP
+sudo ss -tlnp | grep -E ':(80|443) '                                         # on the services address once it is set
+docker-svc network ls --filter label=managed-by=ansible                      # one proxy-<name> per entry in traefik_networks
+```
+
+From a client that resolves `proxy.greyroom.net` to the services address:
+
+```bash
+curl -sI http://proxy.greyroom.net | head -1                       # 308 to https (a GET gets 301: both are permanent)
+curl -sI https://proxy.greyroom.net/dashboard/ | head -1           # 401
+curl -s -o /dev/null -w '%{http_code}\n' -u admin https://proxy.greyroom.net/dashboard/   # 200 (GET: with -I the dashboard answers 405)
+curl -sI https://proxy.greyroom.net/dashboard/ | grep -i strict-transport                 # HSTS
+echo | openssl s_client -connect proxy.greyroom.net:443 -servername proxy.greyroom.net 2>/dev/null | openssl x509 -noout -issuer -ext subjectAltName
+```
+
+Expected: issuer Let's Encrypt and `DNS:greyroom.net, DNS:*.greyroom.net`. A second `--tags traefik` run reports `changed=0`.

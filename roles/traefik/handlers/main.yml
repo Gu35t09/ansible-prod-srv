@@ -1,0 +1,12 @@
+---
+# The static configuration and the token are read only at startup.
+- name: Restart Traefik
+  ansible.builtin.command:
+    cmd: docker compose --file {{ traefik_dir }}/compose.yml restart traefik
+    chdir: "{{ traefik_dir }}"
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  changed_when: true
