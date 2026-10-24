@@ -1,7 +1,7 @@
 #!/bin/sh
 # {{ ansible_managed }}
 # Runs the docker CLI against the rootless daemon of {{ docker_user }}.
-# Usage: docker-svc ps | docker-svc compose -f /srv/apps/<app>/compose.yml up -d
+# Usage: docker-svc ps | docker-svc compose -f {{ docker_root_dir }}/app/<name>/compose.yml up -d
 exec sudo -u {{ docker_user }} env \
     XDG_RUNTIME_DIR=/run/user/{{ docker_user_info.uid }} \
     DOCKER_HOST=unix:///run/user/{{ docker_user_info.uid }}/docker.sock \

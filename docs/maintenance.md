@@ -74,7 +74,7 @@ Nothing in this list reboots the server or updates container images. Those happe
 - Check the ClamAV quarantine and empty it once each file has been examined (see [Malware detected](#malware-detected)).
 - Test that notifications work end to end: `sudo notify-telegram "Quarterly test from $(hostname)"`.
 - Run the EICAR test from `verify.md` section 8, and the YARA one from section 12.
-- **Restore test**: restore one application directory from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
+- **Restore test**: restore one service directory (`/srv/docker/app/<name>`) from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
 - Check that object lock or versioning is still on for the bucket, and look at its size and cost.
 - Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
 - Check that the copy of the emergency secrets is still readable and up to date (backup password, Ansible Vault password, the admin user's console password).
@@ -282,8 +282,8 @@ The `backup` script loads the credentials and mounts the disk:
 
 ```bash
 sudo backup usb snapshots                       # or: sudo backup s3 snapshots
-sudo backup usb restore latest --target /tmp/restore --include /srv/apps/<app>
-sudo diff -r /tmp/restore/srv/apps/<app> /srv/apps/<app>    # restore test: compare
+sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/<name>
+sudo diff -r /tmp/restore/srv/docker/app/<name> /srv/docker/app/<name>    # restore test: compare
 sudo rm -rf /tmp/restore
 ```
 

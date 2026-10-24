@@ -100,7 +100,7 @@ init_repository() {
 # ---------------------------------------------------------- usb / s3 <args>
 # Any restic command on one repository, with credentials and mount handled:
 #   backup usb snapshots
-#   backup s3 restore latest --target /tmp/restore --include /srv/apps/vaultwarden
+#   backup s3 restore latest --target /tmp/restore --include /srv/docker/app/vaultwarden
 case "${1:-}" in
     usb)
         shift

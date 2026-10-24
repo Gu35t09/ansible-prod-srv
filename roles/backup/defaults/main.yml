@@ -5,8 +5,8 @@ backup_on_calendar: "*-*-* 02:30:00"
 # checking the repositories, after that day's backup.
 backup_maintenance_weekday: 7
 
-# What to back up. Application data lives under /srv (one directory per
-# application, with its database dumps); /etc is small and keeps the
+# What to back up. Container data lives under /srv/docker/{system,app}/<name>
+# (compose file, data and database dumps); /etc is small and keeps the
 # server's state as it was on the day.
 backup_paths:
   - /srv
