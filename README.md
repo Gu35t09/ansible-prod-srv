@@ -26,7 +26,10 @@ This first version covers the server foundations. The applications (Traefik, Vau
 │   ├── notify/                       # Telegram helper shared by the other roles
 │   ├── clamav/                       # daemon, scheduled scan, quarantine
 │   ├── monitoring/                   # SMART and disk space alerts
+│   ├── integrity/                    # NTP, sshd logging, unpackaged libraries, Ebury
+│   ├── yara/                         # YARA rules and nightly scan
 │   └── update_os/                    # package upgrades and reboot (tag: update-os)
+├── scripts/update-yara-rules.sh      # refreshes the vendored YARA rules
 └── .githooks/pre-commit              # refuses an unencrypted vault.yml
 ```
 
@@ -34,14 +37,16 @@ This first version covers the server foundations. The applications (Traefik, Vau
 
 | Role | What it does |
 | --- | --- |
-| `base` | Hostname, timezone, NTP from OPNsense, persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. |
-| `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t`, kernel and network sysctl hardening. |
+| `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. |
+| `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t` (`LogLevel VERBOSE`, so every login and its key are logged), kernel and network sysctl hardening. |
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
 | `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 53/80/443 only to the services address; forwarding off; outbound left to OPNsense. |
 | `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
+| `integrity` | Every 15 minutes: NTP on and synchronized, sshd logging at INFO or above, no setuid/setgid or ownerless files and no shared object outside the packages in the library directories (how Ebury 1.8.3 hides), no `/etc/ld.so.preload`, nothing but sshd in `ssh.service`, no Ebury socket. Telegram alert when the findings change, repeated daily while they last. |
+| `yara` | YARA with rules vendored in the repository (ESET for Ebury and the OpenSSH backdoors, Elastic for Linux rootkits, miners, botnets, C2 implants, webshells). Nightly scan at 01:00 of binaries, libraries, configuration, temporary directories, application data and container layers, plus the memory of the sshd processes. Reports only; nothing is moved. |
 | `update_os` | `apt dist-upgrade`, reboot only when a newer kernel is waiting or a package asks for it, restart of the rootless daemon after a Docker upgrade. |
 
 ## Tags and Semaphore jobs
@@ -49,7 +54,7 @@ This first version covers the server foundations. The applications (Traefik, Vau
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,clamav,monitoring` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,clamav,monitoring,integrity,yara` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
@@ -116,6 +121,9 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `clamav_action_on_detect` | `quarantine` | Or `notify_only`, `remove`. |
 | `disk_space_warn_percent` | `85` | |
 | `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
+| `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
+| `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
+| `yara_scan_paths`, `yara_exclude_paths` | see `roles/yara/defaults/main.yml` | `/etc/yara` (the rules) and the ClamAV quarantine are always left out. |
 
 ## Working with Docker
 
@@ -137,6 +145,8 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
 | `database.clamav.net` | freshclam |
 | `api.telegram.org` | notifications |
+
+The YARA rules need no outbound access: they are copied from the repository. Refresh them on the laptop with `scripts/update-yara-rules.sh` (see the maintenance guide).
 
 ## Documentation
 

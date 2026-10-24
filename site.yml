@@ -44,5 +44,9 @@
       tags: [clamav]
     - role: monitoring
       tags: [monitoring]
+    - role: integrity
+      tags: [integrity]
+    - role: yara
+      tags: [yara]
     - role: update_os
       tags: [update-os, never]

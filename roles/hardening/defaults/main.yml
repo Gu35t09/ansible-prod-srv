@@ -4,6 +4,10 @@ ssh_port: 22
 # Empty: sshd listens on all addresses. Set it to the management IP (it must
 # equal ansible_host) to keep SSH off the services VLAN.
 ssh_listen_address: ""
+# INFO or VERBOSE. VERBOSE also logs the fingerprint of the key used for each
+# login, which tells which device logged in. The integrity role alerts if the
+# effective level drops below INFO.
+ssh_log_level: "VERBOSE"
 
 # User namespaces stay enabled: rootless Docker needs them.
 hardening_sysctl:

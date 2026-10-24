@@ -17,11 +17,13 @@ Contents:
 9. [Role: notify](#9-role-notify)
 10. [Role: clamav](#10-role-clamav)
 11. [Role: monitoring](#11-role-monitoring)
-12. [Role: update_os](#12-role-update_os)
-13. [The pre-commit hook](#13-the-pre-commit-hook)
-14. [Files the playbook creates on the server](#14-files-the-playbook-creates-on-the-server)
-15. [Known limits and points to review](#15-known-limits-and-points-to-review)
-16. [How it was tested](#16-how-it-was-tested)
+12. [Role: integrity](#12-role-integrity)
+13. [Role: yara](#13-role-yara)
+14. [Role: update_os](#14-role-update_os)
+15. [The pre-commit hook](#15-the-pre-commit-hook)
+16. [Files the playbook creates on the server](#16-files-the-playbook-creates-on-the-server)
+17. [Known limits and points to review](#17-known-limits-and-points-to-review)
+18. [How it was tested](#18-how-it-was-tested)
 
 ---
 
@@ -33,7 +35,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `update_os`. `notify` is not in the list: it runs as a dependency of `clamav` and `monitoring` (see their `meta/main.yml`).
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity` and `yara` (see their `meta/main.yml`).
 
 The order matters:
 
@@ -51,6 +53,8 @@ The order matters:
 | `docker` | docker_rootless |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
+| `integrity` | integrity (+ notify) |
+| `yara` | yara (+ notify) |
 | `network`, `never` | network |
 | `update-os`, `never` | update_os |
 
@@ -199,6 +203,10 @@ Creates `/etc/systemd/timesyncd.conf.d` and `/etc/systemd/journald.conf.d`, wher
 Writes `NTP=<OPNsense>` and empties `FallbackNTP=`, so the server never tries the Debian NTP pools, which egress filtering would block anyway. On change it restarts timesyncd. It is skipped if `ntp_servers` is empty.
 Check: `timedatectl timesync-status`.
 
+**Keep systemd-timesyncd running** / **Read the NTP synchronization setting** / **Turn on NTP synchronization**
+`systemd-timesyncd` is in `base_packages`, enabled and started, and `timedatectl set-ntp true` runs whenever `timedatectl` reports `NTP=no`. An attacker who stops time synchronization makes the journal timestamps useless as evidence, and a drifting clock breaks TLS and Telegram. The `integrity` role checks the same things every 15 minutes, so a change made by hand between two runs is reported.
+Check: `timedatectl show --property=NTP --property=NTPSynchronized`.
+
 **Cap the size of the persistent journal**
 Logs are kept across reboots (`Storage=persistent`) and limited to `journald_max_use` (500 MB), so they cannot fill the single disk.
 Check: `journalctl --disk-usage`.
@@ -231,7 +239,8 @@ An `assert` that stops the play **before** any change if:
 
 - `admin_ssh_keys` is empty, since password authentication will be disabled;
 - `ansible_user` differs from `admin_user`, since `AllowUsers` would lock Ansible out;
-- `ssh_listen_address` is set but differs from `ansible_host`, since sshd would stop listening on the address Ansible uses.
+- `ssh_listen_address` is set but differs from `ansible_host`, since sshd would stop listening on the address Ansible uses;
+- `ssh_log_level` is not `INFO` or `VERBOSE`, since lower levels drop the login records.
 
 **Create the administrative user**
 Creates the user (or leaves it as is), adds it to the `sudo` group with `append: true` (other groups are kept) and gives it bash as shell.
@@ -250,6 +259,7 @@ Template `templates/sshd_hardening.conf.j2` → `/etc/ssh/sshd_config.d/00-harde
 | `Port` | Configurable SSH port (22 by default). |
 | `ListenAddress` | Only if `ssh_listen_address` is set: SSH on the management IP only. |
 | `PermitRootLogin no` | Nobody logs in as root directly. |
+| `LogLevel VERBOSE` | Every login is logged with the fingerprint of the key used, so you can tell which device logged in. Ebury-style intrusions lower the level to hide their logins: the `integrity` role alerts if the effective level drops below INFO. |
 | `PubkeyAuthentication yes`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no` | Keys only. |
 | `AllowUsers <admin_user>` | No other account can log in, `svc-docker` included. |
 | `X11Forwarding no`, `AllowAgentForwarding no`, `AllowTcpForwarding no` | No graphical forwarding, no agent forwarding, no SSH tunnels. If you ever need a tunnel, change `AllowTcpForwarding` here. |
@@ -554,7 +564,77 @@ To avoid a message every 15 minutes, it keeps a state per mount point in `/var/l
 
 ---
 
-## 12. Role: update_os
+## 12. Role: integrity
+
+Purpose: notice the traces left by Ebury and similar OpenSSH backdoors, and the changes made to hide them. It follows the October 2026 compromise of Tor exit relays, where Ebury 1.8.3 survived reboots as a **setuid library file that no package installed**, next to the packaged `libkeyutils`, with the `libkeyutils.so.1` symlink pointed at it. `dpkg --verify` and `debsums` saw nothing, because no packaged file had changed.
+
+**Install the integrity check** / **service and timer** / **Enable the integrity check**
+`/usr/local/sbin/integrity-check` runs every 15 minutes (`integrity_check_on_calendar`). It takes under a second. The unit sets `H=1 I=1 LD_PRELOAD=: LD_DEBUG=:`, the same variables ESET's `detect_ebury.sh` uses to defuse Ebury's userland rootkit.
+
+| Check | Finding when |
+| --- | --- |
+| NTP | `timedatectl` reports `NTP=no`, `systemd-timesyncd` is not running, or the clock is not synchronized `integrity_ntp_grace_minutes` (30) after boot. |
+| sshd logging | The effective `LogLevel` (`sshd -T`) is below INFO; any `LogLevel` line in `sshd_config` or `sshd_config.d/` sets a lower level (a `Match` block can do it for one address only); `-q` or `LogLevel` appears in the unit's `ExecStart`/`Environment` or in `SSHD_OPTS` (`/etc/default/ssh`). The running listener rewrites its process title, so its options are read where they are set. `sshd -T` failing is also reported. |
+| Libraries | In `integrity_lib_dirs` (`/usr/lib`, `/usr/lib64`, `/usr/libexec`, `/usr/local/lib`): any setuid/setgid shared object; any other setuid/setgid file that no package installed; any file whose owner or group does not exist; any shared object (`*.so`, `*.so.*`) whose real file, symlinks followed, no package installed. |
+| Preload | `/etc/ld.so.preload` has entries, or `LD_PRELOAD` is set in `/etc/environment(.d)`. |
+| `ssh.service` | A process inside the unit's cgroup is not `/usr/sbin/sshd`, `sshd-session` or `sshd-auth`. Logged-in sessions move to the user's slice, so anything else there is suspect: Ebury runs a fake `rsyslogd` (earlier `systemd-udevd` or `arpd`) in this cgroup. |
+| Ebury sockets | One of the abstract UNIX sockets in `integrity_ebury_sockets` (from ESET's script, up to 1.8.3's `@event-0YsOG9WSOE`) accepts a connection or appears in `/proc/net/unix`. |
+
+How the library check decides what "installed by a package" means:
+
+- the reference list is every path in `/var/lib/dpkg/info/*.list`, plus the targets of `dpkg-divert`;
+- for each of those paths the **directory** is resolved, because of merged `/usr` (`/lib` is a symlink to `/usr/lib`, and packages list either form). The file itself is never resolved: otherwise the packaged `libkeyutils.so.1` symlink, once pointed at the implant, would make the implant look packaged. This was a bug found while testing;
+- on the server side every shared object name is resolved to its real file, and that file must be in the list;
+- while dpkg holds its lock (an upgrade is unpacking files under temporary names) the library check is skipped for that run. The lock is read from `/proc/locks`, never taken, so the check cannot make apt fail.
+
+Reporting: every finding goes to the journal at each run. Telegram gets a message when the set of findings changes, again every `integrity_renotify_hours` (24) while it stays the same, and a "✅ ALL CLEAR" when it empties. The state is in `/var/lib/integrity-check/state` and is saved only after a successful send, so a failed send is retried.
+
+Check: `sudo integrity-check; echo $?` (0 = nothing found, 1 = findings) and `journalctl -u integrity-check.service`.
+
+---
+
+## 13. Role: yara
+
+Purpose: look for known Linux malware by content, in files and in the memory of the OpenSSH processes. ClamAV covers uploads and common malware; YARA adds the rule sets that track Ebury, OpenSSH backdoors and the tooling usually found on compromised Docker hosts.
+
+### The rules
+
+They are vendored in `roles/yara/files/rules/` and copied to `/etc/yara/rules/`: the server cannot reach GitHub. `scripts/update-yara-rules.sh` fetches them at pinned commits and writes `SOURCES.md` with the commits and licenses.
+
+| Directory | Source | Covers | License |
+| --- | --- | --- | --- |
+| `eset/` | [eset/malware-ioc](https://github.com/eset/malware-ioc) | Ebury (`libkeyutils` with a constructor, the v1.7/1.8 string decryption), the OpenSSH backdoors of "The Dark Side of the ForSSHe" | BSD 2-Clause |
+| `elastic/` | [elastic/protections-artifacts](https://github.com/elastic/protections-artifacts) | Every `Linux_*` and `Multi_*` rule: Ebury, SSHDoor, sshd kits, rootkits (Diamorphine, Reptile, Perfctl, …), miners (XMRig and others), Docker botnets (Kinsing, Tsunami, Mirai), C2 implants (Sliver, Merlin, Mythic), tunnels (gsocket), webshells, ransomware, privilege-escalation exploits, EICAR | Elastic License 2.0 |
+
+Only Elastic's attack-simulation rule is left out (it is not malware). Before adding them, the rules were run against a clean Debian 13 system and against unpacked images of Traefik, Vaultwarden, Immich, Paperless-ngx, Technitium and OpenCloud: no matches in about 125,000 files.
+
+**Install YARA** / **Create the rule and log directories** / **Copy the YARA rules**
+The Debian `yara` package (4.5 on Debian 13), `/etc/yara/rules/` and `/var/log/yara/`.
+
+**List the rules on the server** / **Remove rules no longer in the repository**
+A rule dropped from the repository must stop running, so any `.yar` file on the server that is not in `files/rules/` is deleted.
+
+**Install the scan script** / **Check that the rules compile**
+After any change to the rules or the script, `yara-scan --compile-only` compiles them: a broken rule fails the play instead of every nightly scan.
+
+**Install the scan service and timer** / **Enable the scheduled scan**
+Daily at 01:00 (`yara_scan_on_calendar`), with the lowest CPU and I/O priority.
+
+### The scan script (`/usr/local/sbin/yara-scan`)
+
+1. Compiles the rules into a temporary directory under `/run` (under a second), one namespace per source. Two sets: all rules for files; for memory, all except `yara_memory_exclude_rules`. ESET's SSHDoor rules are written for files on disk: in the memory of a clean sshd they also see the loaded libraries and match, which was found while testing.
+2. Builds the list of files with `find`: `yara_scan_paths`, without crossing into other filesystems, skipping `yara_exclude_paths` and files over `yara_max_file_size_mb` (64 MB). `/etc/yara` is always excluded, because the rules contain the very strings they look for; so is the ClamAV quarantine. `/home` includes `~svc-docker/.local/share/docker`, so image and container layers are scanned: a miner dropped in a container shows up there.
+3. Scans the files (`yara --scan-list`). Unreadable or vanished files are counted in the log, not treated as errors.
+4. Scans the memory of the processes named in `yara_process_names` (`sshd`, `sshd-session`, `sshd-auth`) and of any process running from `/tmp`, `/var/tmp`, `/dev/shm`, a memfd or a deleted file, which is how droppers and fileless miners look.
+5. Writes `/var/log/yara/scan_<date>.log` (kept 30 days) and sends a Telegram message on matches or on an error. Nothing is moved or deleted: a match on a system library must be investigated, not quarantined.
+
+Exit codes: 0 clean, 1 matches, 2 error. Like ClamAV, `SuccessExitStatus=1` keeps a match from showing as a failed unit.
+
+Check: `sudo systemctl start yara-scan.service`, then the newest log in `/var/log/yara/`.
+
+---
+
+## 14. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -586,13 +666,13 @@ Container images are **not** updated here: they will follow the `update-containe
 
 ---
 
-## 13. The pre-commit hook
+## 15. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 14. Files the playbook creates on the server
+## 16. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -619,12 +699,17 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/root/clamav-quarantine/` | clamav | Quarantine |
 | `/etc/smartd.conf`, `/etc/smartmontools/run.d/20telegram` | monitoring | SMART (physical hosts only) |
 | `/usr/local/sbin/disk-space-check`, `/etc/systemd/system/disk-space-check.{service,timer}` | monitoring | Disk space |
+| `/usr/local/sbin/integrity-check`, `/etc/systemd/system/integrity-check.{service,timer}` | integrity | Integrity check |
+| `/var/lib/integrity-check/state` | integrity | Last findings sent to Telegram |
+| `/etc/yara/rules/` | yara | YARA rules |
+| `/usr/local/sbin/yara-scan`, `/etc/systemd/system/yara-scan.{service,timer}` | yara | Scheduled YARA scan |
+| `/var/log/yara/scan_*.log` | yara | Scan logs |
 
 Each file begins with a "Managed by Ansible" comment: changes made by hand are overwritten at the next run.
 
 ---
 
-## 15. Known limits and points to review
+## 17. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -634,11 +719,15 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **The network role reboots** whenever the configuration changes. Run it in a maintenance window.
 - **`/etc/resolv.conf`** is written only by the network role. Before you run it, the server keeps the DNS servers set by the installer.
 - **The Docker key checksum** is pinned. If Docker ever rotates its key, the task fails on purpose: check the new fingerprint on docs.docker.com, then update `docker_apt_key_checksum`.
+- **The integrity check and YARA run on the server they watch.** An attacker with root can stop the timers or edit the scripts. What they add is early warning against tooling that does not expect them, and a trail: a sudden silence (no daily ClamAV message, or an integrity alert followed by nothing) is a signal too. Logs leave the server only once remote logging exists.
+- **No full file integrity database (AIDE).** It would flag every security update that unattended-upgrades installs. The integrity role checks instead the specific things Ebury-style implants change, and the monthly `--check --diff` run catches drift in the managed files.
+- **The YARA rules change only when you refresh them** with `scripts/update-yara-rules.sh`; the server does not download them.
+- **The memory scan covers OpenSSH and suspicious processes only**, not every container process.
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 16. How it was tested
+## 18. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -652,5 +741,18 @@ On a Debian 13 VM (the official cloud image, switched to ifupdown to match a net
 | ClamAV with the EICAR file | Detected, quarantined, notification attempted |
 | Rootless container on port 80 | The container sees the real client IP |
 | ansible-lint (production profile), yamllint, shellcheck | No findings |
+
+The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested on a Debian 13 container with systemd and SSH (the lab VM was off):
+
+| Test | Result |
+| --- | --- |
+| `base`, `hardening`, `integrity`, `yara` from scratch, then again | OK; the second run changes only the two timesyncd tasks, because systemd does not run timesyncd in a container |
+| Integrity check on a clean system | Only the container's NTP findings |
+| Planted: setuid copy of libkeyutils with `libkeyutils.so.1` pointed at it, an unpackaged `.so`, an ownerless file, `/etc/ld.so.preload`, `LogLevel QUIET` in a `Match` block, `SSHD_OPTS="-q"`, a fake rsyslogd in the `ssh.service` cgroup, a listener on `@event-0YsOG9WSOE` | All reported; check time 0.6 s |
+| YARA on clean Debian 13 and on six application images | No matches |
+| YARA with an EICAR file in `/tmp` | Detected, notification attempted |
+| A rule file removed from the repository | Deleted from the server at the next run |
+
+Bugs found and fixed during these tests: the rules and the compiled rules matching themselves; ESET's SSHDoor rules matching a clean sshd in memory; packaged symlinks hiding the implant they point to; Ansible's `fileglob` not matching subdirectories, which emptied the rule directory.
 
 Bugs found and fixed during these tests: `ansible_managed` undefined in `copy` tasks on ansible-core 2.20; clamd start skipped on the first run; unattended-upgrades not limited to security updates; the rootlesskit network colliding with `10.0.2.0/24`; the network rollback reported as a success.

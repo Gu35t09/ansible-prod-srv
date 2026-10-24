@@ -14,10 +14,10 @@ ansible-playbook site.yml --ask-vault-pass                   # a second run must
 
 ```bash
 sudo whoami                       # root, without a password
-sudo sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers|allowtcpforwarding|maxauthtries) '
+sudo sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers|allowtcpforwarding|maxauthtries|loglevel) '
 ```
 
-Expected: `permitrootlogin no`, `passwordauthentication no`, `allowusers <admin_user>` and, once `ssh_listen_address` is set, `listenaddress <management IP>:22`.
+Expected: `permitrootlogin no`, `passwordauthentication no`, `allowusers <admin_user>`, `loglevel VERBOSE` and, once `ssh_listen_address` is set, `listenaddress <management IP>:22`.
 
 ## 3. Automatic updates
 
@@ -107,3 +107,38 @@ ansible-playbook site.yml --tags update-os --ask-vault-pass
 ```
 
 A reboot happens only when needed. To test the reboot path: `sudo touch /run/reboot-required` on the server, then run the job. After the reboot the play checks that the rootless Docker daemon is running again.
+
+## 11. Time and integrity check
+
+```bash
+timedatectl show --property=NTP --property=NTPSynchronized   # NTP=yes, NTPSynchronized=yes
+systemctl list-timers integrity-check.timer
+sudo integrity-check; echo "exit code $?"                    # 0 and "nothing found"
+```
+
+To test the alert path, plant a fake unpackaged library, run the check, then remove it:
+
+```bash
+sudo cp /usr/lib/x86_64-linux-gnu/libkeyutils.so.1.10 /usr/lib/x86_64-linux-gnu/libtest-integrity.so.1
+sudo integrity-check     # exit code 1, "shared object not installed by any package", Telegram message
+sudo rm /usr/lib/x86_64-linux-gnu/libtest-integrity.so.1
+sudo integrity-check     # "nothing found" and "✅ INTEGRITY CHECK: ALL CLEAR" on Telegram
+```
+
+## 12. YARA
+
+```bash
+sudo yara-scan --compile-only && echo "rules OK"
+systemctl list-timers yara-scan.timer
+```
+
+Test with the EICAR file (the Elastic rules include it):
+
+```bash
+echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
+sudo systemctl start yara-scan.service
+sudo sh -c 'cat "$(ls -t /var/log/yara/scan_*.log | head -n 1)"' | grep -v '^error scanning'
+rm -f /tmp/eicar.com
+```
+
+Expected: `Multi_EICAR_ac8f42d6 /tmp/eicar.com` and a "YARA: 1 MATCH(ES)" message on Telegram. Run it before 00:00, or ClamAV moves the file to the quarantine first, and the quarantine is never scanned by YARA.

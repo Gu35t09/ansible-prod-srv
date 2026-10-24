@@ -1,0 +1,84 @@
+---
+# The rules come from this repository (roles/yara/files/rules, refreshed with
+# scripts/update-yara-rules.sh): the server cannot reach GitHub.
+
+- name: Install YARA
+  ansible.builtin.apt:
+    name: yara
+    state: present
+
+- name: Create the rule and log directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/yara, mode: "0755" }
+    - { path: /etc/yara/rules, mode: "0755" }
+    - { path: "{{ yara_log_dir }}", mode: "0750" }
+
+- name: Copy the YARA rules
+  ansible.builtin.copy:
+    src: rules/
+    dest: /etc/yara/rules/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  register: yara_rules_copy
+
+- name: List the rules on the server
+  ansible.builtin.find:
+    paths: /etc/yara/rules
+    patterns: "*.yar"
+    recurse: true
+  register: yara_rules_present
+
+# Rules dropped from the repository must not stay active on the server.
+- name: Remove rules no longer in the repository
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ yara_rules_present.files | map(attribute='path') | reject('in', yara_rules_wanted) | list }}"
+  vars:
+    yara_rules_wanted: >-
+      {{ query('community.general.filetree', role_path ~ '/files/rules')
+         | selectattr('state', 'eq', 'file') | map(attribute='path')
+         | select('match', '.*\.yar$') | map('regex_replace', '^', '/etc/yara/rules/') | list }}
+  register: yara_rules_removed
+
+- name: Install the scan script
+  ansible.builtin.template:
+    src: yara-scan.sh.j2
+    dest: /usr/local/sbin/yara-scan
+    owner: root
+    group: root
+    mode: "0750"
+  register: yara_script
+
+# A rule that does not compile would stop every scan: fail here instead.
+- name: Check that the rules compile
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/yara-scan --compile-only
+  changed_when: false
+  when: yara_rules_copy is changed or yara_rules_removed is changed or yara_script is changed
+
+- name: Install the scan service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - yara-scan.service
+    - yara-scan.timer
+
+- name: Enable the scheduled scan
+  ansible.builtin.systemd_service:
+    name: yara-scan.timer
+    enabled: "{{ yara_enabled | bool }}"
+    state: "{{ 'started' if yara_enabled | bool else 'stopped' }}"
+    daemon_reload: true

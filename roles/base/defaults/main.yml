@@ -16,6 +16,7 @@ base_packages:
   - needrestart
   - python3-apt
   - sudo
+  - systemd-timesyncd
   - unattended-upgrades
 
 # needrestart mode after package upgrades: a = restart services automatically,

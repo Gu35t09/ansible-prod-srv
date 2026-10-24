@@ -48,6 +48,26 @@
   when: ntp_servers | length > 0
   notify: Restart systemd-timesyncd
 
+# Correct timestamps are what make the journal usable as evidence, and TLS and
+# Telegram need a sane clock. The integrity role alerts if NTP stops.
+- name: Keep systemd-timesyncd running
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+
+- name: Read the NTP synchronization setting
+  ansible.builtin.command:
+    cmd: timedatectl show --property=NTP --value
+  register: base_ntp_setting
+  changed_when: false
+
+- name: Turn on NTP synchronization
+  ansible.builtin.command:
+    cmd: timedatectl set-ntp true
+  when: base_ntp_setting.stdout != 'yes'
+  changed_when: true
+
 - name: Cap the size of the persistent journal
   ansible.builtin.copy:
     dest: /etc/systemd/journald.conf.d/10-size.conf
