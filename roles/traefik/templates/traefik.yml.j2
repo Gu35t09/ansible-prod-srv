@@ -10,8 +10,10 @@ log:
   level: INFO
   filePath: /logs/traefik.log
 # Every request, with the real client IP (slirp4netns port driver).
+# addInternals: also the dashboard (api@internal), so failed logins show up.
 accessLog:
   filePath: /logs/access.log
+  addInternals: true
 
 api:
   dashboard: true
@@ -41,6 +43,9 @@ entryPoints:
               - "*.{{ traefik_domain }}"
   ping:
     address: ":8082"
+    # The health check runs every 30 seconds: keep it out of the access log.
+    observability:
+      accessLogs: false
 
 providers:
   file:

@@ -172,7 +172,7 @@ On the server:
 ```bash
 docker-svc ps --filter name=traefik --format '{{.Names}} {{.Status}}'    # Up ... (healthy)
 sudo grep -iE 'error|acme' /srv/docker/system/traefik/logs/traefik.log | tail   # no errors once the certificate is issued
-sudo tail -n 3 /srv/docker/system/traefik/logs/access.log                    # one line per request, real client IP
+sudo tail -n 3 /srv/docker/system/traefik/logs/access.log                    # one line per HTTPS request (dashboard included), real client IP
 sudo ss -tlnp | grep -E ':(80|443) '                                         # on the services address once it is set
 ```
 
