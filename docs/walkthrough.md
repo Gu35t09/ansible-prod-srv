@@ -463,6 +463,9 @@ Waits for `/run/user/<uid>/bus`, a sign that the user's systemd instance is read
 **Install the docker-svc wrapper for the admin user**
 `/usr/local/bin/docker-svc` runs `docker` as `svc-docker` with the right socket. The admin has no direct access to the socket; the wrapper goes through sudo, so every use is recorded in the journal.
 
+**Create the container directories**
+`/srv/docker`, `/srv/docker/system` (infrastructure: Traefik, Technitium, Renovate) and `/srv/docker/app` (applications: Vaultwarden, Immich, OpenCloud, Paperless), owned by root with group `svc-docker`, mode 0750: the service user can reach them, other users cannot. Each service role adds `<name>/` with its compose file, data and database dumps, so one directory holds everything a restore needs.
+
 **Apply pending daemon changes before the check** (`meta: flush_handlers`)
 Runs the **Restart rootless Docker** handler now if `daemon.json` or the unit changed, so the next check sees the new configuration.
 
@@ -527,7 +530,7 @@ A systemd timer instead of cron: logs end up in the journal, `Persistent=true` r
 6. Reads ClamAV's exit code: `1` = threats (sends a message with up to 20 files), `>1` = error, `0` = clean (sends a summary if `clamav_notify_clean` is on).
 7. A failed notification is written to the log; it does not change the scan result.
 
-Scanned paths: admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp`. Image layers (`~svc-docker/.local/share/docker`) are left out on purpose: they are public software, re-scanning them every night is expensive, and Trivy is the right tool for them. Application data will be bind-mounted under `/srv`.
+Scanned paths: admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp`. Image layers (`~svc-docker/.local/share/docker`) are left out on purpose: they are public software and re-scanning them every night with ClamAV is expensive; the nightly YARA scan covers them. Container data is bind-mounted under `/srv/docker`.
 
 ---
 
@@ -657,7 +660,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 ### The backup script (`/usr/local/sbin/backup`)
 
-1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each application role will add one that dumps its database under `/srv/apps/<app>/`. If one fails, the run goes on with the previous dump and the report shows a warning.
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database will add one that dumps it under `/srv/docker/{system,app}/<name>/`. If one fails, the run goes on with the previous dump and the report shows a warning.
 2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
 3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
 4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check`. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
@@ -665,7 +668,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 Exit code 1 when a copy failed, so the unit shows as failed in `systemctl --failed`.
 
-The same script runs any restic command on one copy, with the credentials loaded and the disk mounted for the duration: `sudo backup usb snapshots`, `sudo backup s3 restore latest --target /tmp/restore --include /srv/apps/<app>`. This is what the restore procedures in the maintenance guide use.
+The same script runs any restic command on one copy, with the credentials loaded and the disk mounted for the duration: `sudo backup usb snapshots`, `sudo backup s3 restore latest --target /tmp/restore --include /srv/docker/app/<name>`. This is what the restore procedures in the maintenance guide use.
 
 What protects the copies:
 
@@ -734,6 +737,7 @@ Container images are **not** updated here: they will follow the `update-containe
 | `~svc-docker/.config/docker/daemon.json` | docker_rootless | Container log limits |
 | `~svc-docker/.config/systemd/user/docker.service` | docker_rootless | Rootless daemon |
 | `/usr/local/bin/docker-svc` | docker_rootless | Wrapper for the admin |
+| `/srv/docker/{system,app}/` | docker_rootless | Compose files and data of the containers |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |

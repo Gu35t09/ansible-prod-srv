@@ -92,6 +92,8 @@ sudo rm -f /root/clamav-quarantine/eicar.com
 
 ## 9. SMART and disk space
 
+On a virtual machine smartmontools is not installed (there is no physical disk to read): skip `smartctl` and test only the disk space check.
+
 ```bash
 sudo smartctl -H /dev/nvme0n1                    # or /dev/sda
 sudo systemctl start disk-space-check.service

@@ -131,7 +131,7 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `network_links` | — | One entry per network; exactly one with `default_route: true`; `vlan: null` means untagged. |
 | `docker_user` | `svc-docker` | Owner of the rootless daemon and of the application data. |
 | `docker_rootlesskit_cidr` | empty (`10.0.2.0/24`) | Change it if any network the server talks to uses `10.0.2.0/24`, or replies to those clients get lost. |
-| `clamav_scan_paths` | admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp` | Application data will live under `/srv`. Missing paths are skipped. |
+| `clamav_scan_paths` | admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp` | Container data lives under `/srv/docker`. Missing paths are skipped. |
 | `clamav_action_on_detect` | `quarantine` | Or `notify_only`, `remove`. |
 | `disk_space_warn_percent` | `85` | |
 | `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
@@ -139,16 +139,26 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
-| `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Applications keep data and dumps under `/srv/apps/<app>/`. |
+| `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
 | `yara_scan_paths`, `yara_exclude_paths` | see `roles/yara/defaults/main.yml` | `/etc/yara` (the rules) and the ClamAV quarantine are always left out. |
 
 ## Working with Docker
+
+Every container service has its own directory, with its compose file, its data and, if it has a database, its dumps:
+
+```text
+/srv/docker/
+├── system/        # infrastructure: traefik, technitium, renovate
+│   └── <name>/
+└── app/           # applications: vaultwarden, immich, opencloud, paperless
+    └── <name>/
+```
 
 The admin user has no access to the Docker socket. The `docker-svc` wrapper runs the CLI as `svc-docker`:
 
 ```bash
 docker-svc ps
-docker-svc compose -f /srv/apps/<app>/compose.yml up -d
+docker-svc compose -f /srv/docker/app/<name>/compose.yml up -d
 ```
 
 ## Outbound access needed

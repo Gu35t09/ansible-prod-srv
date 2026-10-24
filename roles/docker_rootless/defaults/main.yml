@@ -3,6 +3,10 @@
 # sudo: access to its Docker socket is not tied to the admin account.
 docker_user: "svc-docker"
 docker_user_home: "/home/{{ docker_user }}"
+# Compose files and data of the containers, one directory per service:
+#   <docker_root_dir>/system/<name>  infrastructure (Traefik, Technitium, Renovate)
+#   <docker_root_dir>/app/<name>     applications (Vaultwarden, Immich, ...)
+docker_root_dir: /srv/docker
 
 docker_apt_key_url: "https://download.docker.com/linux/debian/gpg"
 # SHA-256 of the key file (fingerprint 9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88).

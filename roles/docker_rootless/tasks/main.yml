@@ -143,6 +143,20 @@
     group: root
     mode: "0755"
 
+# Readable by the service user only: the application roles add one directory
+# per service, with its compose file, data and database dumps.
+- name: Create the container directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0750"
+  loop:
+    - "{{ docker_root_dir }}"
+    - "{{ docker_root_dir }}/system"
+    - "{{ docker_root_dir }}/app"
+
 - name: Apply pending daemon changes before the check
   ansible.builtin.meta: flush_handlers
 
