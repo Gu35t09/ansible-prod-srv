@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-This first version covers the server foundations. The applications (Traefik, Vaultwarden, Immich, OpenCloud, Paperless, Technitium), Renovate and the backup come next, each as its own role.
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). The applications (Traefik, Vaultwarden, Immich, OpenCloud, Paperless, Technitium) and Renovate come next, each as its own role.
 
 ## Layout
 
