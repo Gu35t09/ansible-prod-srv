@@ -48,5 +48,7 @@
       tags: [integrity]
     - role: yara
       tags: [yara]
+    - role: backup
+      tags: [backup]
     - role: update_os
       tags: [update-os, never]

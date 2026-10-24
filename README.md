@@ -28,6 +28,7 @@ This first version covers the server foundations. The applications (Traefik, Vau
 │   ├── monitoring/                   # SMART and disk space alerts
 │   ├── integrity/                    # NTP, sshd logging, unpackaged libraries, Ebury
 │   ├── yara/                         # YARA rules and nightly scan
+│   ├── backup/                       # restic to a USB disk and an S3 bucket
 │   └── update_os/                    # package upgrades and reboot (tag: update-os)
 ├── scripts/update-yara-rules.sh      # refreshes the vendored YARA rules
 └── .githooks/pre-commit              # refuses an unencrypted vault.yml
@@ -46,6 +47,7 @@ This first version covers the server foundations. The applications (Traefik, Vau
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
 | `integrity` | Every 15 minutes: NTP on and synchronized, sshd logging at INFO or above, no setuid/setgid or ownerless files and no shared object outside the packages in the library directories (how Ebury 1.8.3 hides), no `/etc/ld.so.preload`, nothing but sshd in `ssh.service`, no Ebury socket. Telegram alert when the findings change, repeated daily while they last. |
+| `backup` | restic, daily at 02:30, to two encrypted repositories: an external USB disk (found by its label, mounted only during the backup) and an S3 bucket. Backs up `/srv` and `/etc` after the applications' dump scripts in `/etc/backup/pre.d/`. Keeps 7 daily, 4 weekly, 12 monthly snapshots; prune and `restic check` on Sundays. One Telegram message per run with the result of each copy. |
 | `yara` | YARA with rules vendored in the repository (ESET for Ebury and the OpenSSH backdoors, Elastic for Linux rootkits, miners, botnets, C2 implants, webshells). Nightly scan at 01:00 of binaries, libraries, configuration, temporary directories, application data and container layers, plus the memory of the sshd processes. Reports only; nothing is moved. |
 | `update_os` | `apt dist-upgrade`, reboot only when a newer kernel is waiting or a package asks for it, restart of the rootless daemon after a Docker upgrade. |
 
@@ -54,7 +56,7 @@ This first version covers the server foundations. The applications (Traefik, Vau
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,clamav,monitoring,integrity,yara` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
@@ -84,6 +86,18 @@ ansible-vault edit inventory/group_vars/prod_servers/vault.yml
 ```
 
 Then edit `inventory/hosts.ini` (management IP and user) and `inventory/group_vars/prod_servers/main.yml`.
+
+For the backup you need, before the first run:
+
+- **The restic password** in the vault (`vault_restic_password`, e.g. `openssl rand -base64 33`). Write it on the emergency sheet as well: without it no backup can be read.
+- **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. Turn on **object lock or versioning** on the bucket (for example 30 days): the server holds a key that can delete, so this is what keeps a compromised server from erasing the history. Allow the endpoint on OPNsense.
+- **The USB disk**, formatted once with the label the server looks for. This erases the disk:
+  ```bash
+  lsblk                                   # find the disk, e.g. /dev/sdb
+  sudo wipefs -a /dev/sdX
+  sudo mkfs.ext4 -L backup-usb /dev/sdX
+  ```
+  Leave it plugged in: the backup mounts it at `/mnt/backup-usb` only while it runs. If the disk is missing at the first run, connect it later and run `sudo backup --init`.
 
 ### 3. Run it
 
@@ -123,6 +137,9 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
 | `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
+| `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
+| `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
+| `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Applications keep data and dumps under `/srv/apps/<app>/`. |
 | `yara_scan_paths`, `yara_exclude_paths` | see `roles/yara/defaults/main.yml` | `/etc/yara` (the rules) and the ClamAV quarantine are always left out. |
 
 ## Working with Docker
@@ -145,6 +162,7 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
 | `database.clamav.net` | freshclam |
 | `api.telegram.org` | notifications |
+| the S3 endpoint (`backup_s3_endpoint`) | backup |
 
 The YARA rules need no outbound access: they are copied from the repository. Refresh them on the laptop with `scripts/update-yara-rules.sh` (see the maintenance guide).
 

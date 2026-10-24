@@ -19,11 +19,12 @@ Contents:
 11. [Role: monitoring](#11-role-monitoring)
 12. [Role: integrity](#12-role-integrity)
 13. [Role: yara](#13-role-yara)
-14. [Role: update_os](#14-role-update_os)
-15. [The pre-commit hook](#15-the-pre-commit-hook)
-16. [Files the playbook creates on the server](#16-files-the-playbook-creates-on-the-server)
-17. [Known limits and points to review](#17-known-limits-and-points-to-review)
-18. [How it was tested](#18-how-it-was-tested)
+14. [Role: backup](#14-role-backup)
+15. [Role: update_os](#15-role-update_os)
+16. [The pre-commit hook](#16-the-pre-commit-hook)
+17. [Files the playbook creates on the server](#17-files-the-playbook-creates-on-the-server)
+18. [Known limits and points to review](#18-known-limits-and-points-to-review)
+19. [How it was tested](#19-how-it-was-tested)
 
 ---
 
@@ -35,7 +36,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity` and `yara` (see their `meta/main.yml`).
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`).
 
 The order matters:
 
@@ -55,6 +56,7 @@ The order matters:
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
 | `yara` | yara (+ notify) |
+| `backup` | backup (+ notify) |
 | `network`, `never` | network |
 | `update-os`, `never` | update_os |
 
@@ -634,7 +636,46 @@ Check: `sudo systemctl start yara-scan.service`, then the newest log in `/var/lo
 
 ---
 
-## 14. Role: update_os
+## 14. Role: backup
+
+Purpose: the only way to get the data back. Ansible rebuilds the configuration; with a single disk in the server, only the backup brings back the data. Two copies, both encrypted by restic with the same password: an external USB disk next to the server and an S3 bucket off site.
+
+**Check the backup settings**
+Stops the play if no copy is enabled, if `restic_password` is shorter than 20 characters, or if S3 is enabled without endpoint, bucket or keys. The values come from the vault through `main.yml`, with an empty default, so a missing vault key gives this clear message instead of an undefined-variable error.
+
+**Install restic** / **Create the backup directories**
+The Debian package (0.18 on Debian 13). Root-only directories: `/etc/backup/pre.d` for the applications' dump scripts, `/var/cache/restic` for restic's cache, and the mount point of the USB disk.
+
+**Write the backup credentials**
+`/etc/homelab/backup.env` (root, 0600) with `RESTIC_PASSWORD` and the S3 keys, like `notify.env`. `no_log` keeps them out of the Ansible output.
+
+**Install the backup script** / **Initialize the repositories that do not exist yet** / **Show the repository status**
+`backup --init` creates a repository only when restic says it does not exist (exit code 10), and prints one line per copy. If the USB disk is not plugged in, it skips it without failing: run `sudo backup --init` once it is connected. The nightly run never creates a repository: if one disappears, the run fails and says so, instead of quietly starting an empty one.
+
+**Install the backup service and timer** / **Enable the scheduled backup**
+Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have started and before the long SMART test and the `update-os` job.
+
+### The backup script (`/usr/local/sbin/backup`)
+
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each application role will add one that dumps its database under `/srv/apps/<app>/`. If one fails, the run goes on with the previous dump and the report shows a warning.
+2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
+3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
+4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check`. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
+5. Sends **one Telegram message** per run: `✅ BACKUP OK`, `⚠️ BACKUP COMPLETED WITH WARNINGS` or `❌ BACKUP FAILED`, with one line per copy (snapshot ID, data added, files new and changed, duration). The full restic output is in the journal.
+
+Exit code 1 when a copy failed, so the unit shows as failed in `systemctl --failed`.
+
+The same script runs any restic command on one copy, with the credentials loaded and the disk mounted for the duration: `sudo backup usb snapshots`, `sudo backup s3 restore latest --target /tmp/restore --include /srv/apps/<app>`. This is what the restore procedures in the maintenance guide use.
+
+What protects the copies:
+
+- **Encryption**: restic encrypts everything with the password; the USB disk and the bucket hold nothing readable without it.
+- **USB**: mounted only during the backup, so for 23 hours a day nothing on the server can write to it. You can unplug it at any time outside 02:30 and take it elsewhere.
+- **S3**: the server's key can delete objects, so a compromised server could delete the repository. **Object lock or versioning on the bucket**, set at the provider, is what keeps old versions out of its reach.
+
+---
+
+## 15. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -666,13 +707,13 @@ Container images are **not** updated here: they will follow the `update-containe
 
 ---
 
-## 15. The pre-commit hook
+## 16. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 16. Files the playbook creates on the server
+## 17. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -704,12 +745,16 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/etc/yara/rules/` | yara | YARA rules |
 | `/usr/local/sbin/yara-scan`, `/etc/systemd/system/yara-scan.{service,timer}` | yara | Scheduled YARA scan |
 | `/var/log/yara/scan_*.log` | yara | Scan logs |
+| `/etc/homelab/backup.env` | backup | restic password and S3 keys (0600) |
+| `/usr/local/sbin/backup`, `/etc/systemd/system/backup.{service,timer}` | backup | Daily backup |
+| `/etc/backup/pre.d/` | backup | Applications' dump scripts |
+| `/mnt/backup-usb`, `/var/cache/restic` | backup | USB mount point, restic cache |
 
 Each file begins with a "Managed by Ansible" comment: changes made by hand are overwritten at the next run.
 
 ---
 
-## 17. Known limits and points to review
+## 18. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -723,11 +768,14 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **No full file integrity database (AIDE).** It would flag every security update that unattended-upgrades installs. The integrity role checks instead the specific things Ebury-style implants change, and the monthly `--check --diff` run catches drift in the managed files.
 - **The YARA rules change only when you refresh them** with `scripts/update-yara-rules.sh`; the server does not download them.
 - **The memory scan covers OpenSSH and suspicious processes only**, not every container process.
+- **The backup is file-level.** Databases are consistent only through the dump scripts in `/etc/backup/pre.d/`; a database file copied while it is written may not restore. Every application role must add its dump script.
+- **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
+- **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 18. How it was tested
+## 19. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -752,6 +800,19 @@ The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested 
 | YARA on clean Debian 13 and on six application images | No matches |
 | YARA with an EICAR file in `/tmp` | Detected, notification attempted |
 | A rule file removed from the repository | Deleted from the server at the next run |
+
+The `backup` role was tested in the same container, with an S3 server (rclone `serve s3` with TLS) and a tmpfs in place of the USB disk:
+
+| Test | Result |
+| --- | --- |
+| First run without the USB disk | S3 repository created, USB skipped with a message |
+| Nightly run without the USB disk | `❌ BACKUP FAILED`: USB "not connected", S3 snapshot saved |
+| Disk connected, `--init`, nightly run on the maintenance day | `✅ BACKUP OK` for both, prune and check OK |
+| Second and third run of the role | `changed=0` |
+| A failing pre-backup script, and the USB repository moved away | Warning for the script; USB "repository does not exist", not re-created; S3 OK |
+| `backup usb restore` and `backup s3 restore` | Files identical to the originals |
+
+Bug found and fixed: the USB disk was never unmounted, because the mount ran in a subshell.
 
 Bugs found and fixed during these tests: the rules and the compiled rules matching themselves; ESET's SSHDoor rules matching a clean sshd in memory; packaged symlinks hiding the implant they point to; Ansible's `fileglob` not matching subdirectories, which emptied the rule directory.
 

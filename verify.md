@@ -142,3 +142,23 @@ rm -f /tmp/eicar.com
 ```
 
 Expected: `Multi_EICAR_ac8f42d6 /tmp/eicar.com` and a "YARA: 1 MATCH(ES)" message on Telegram. Run it before 00:00, or ClamAV moves the file to the quarantine first, and the quarantine is never scanned by YARA.
+
+## 13. Backup
+
+```bash
+systemctl list-timers backup.timer
+sudo backup --init                              # "USB: repository exists", "S3: repository exists"
+sudo systemctl start backup.service
+journalctl -u backup.service -n 15 -o cat       # ✅ BACKUP OK, one line per copy
+findmnt /mnt/backup-usb                         # nothing: the disk is unmounted again
+```
+
+Restore test, from each copy:
+
+```bash
+sudo backup usb restore latest --target /tmp/restore --include /etc/hostname && sudo cat /tmp/restore/etc/hostname
+sudo backup s3 restore latest --target /tmp/restore-s3 --include /etc/hostname && sudo cat /tmp/restore-s3/etc/hostname
+sudo rm -rf /tmp/restore /tmp/restore-s3
+```
+
+To test the failure message, unplug the USB disk and start the backup: `❌ BACKUP FAILED` with "USB disk not connected", and the S3 copy still saved.
