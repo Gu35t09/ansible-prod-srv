@@ -2,7 +2,7 @@
 
 How to keep the production server healthy: what runs by itself, what to do by hand and when, how to react to each notification, and how to recover when something breaks.
 
-For what each task does, see [walkthrough.md](walkthrough.md). For check commands, see [../verify.md](../verify.md).
+For what each task does, see [walkthrough.md](walkthrough.md). For check commands, see [../verify.md](../verify.md). For operating the containers, see [containers.md](containers.md).
 
 All server-side commands run as the admin user over SSH (through WireGuard).
 

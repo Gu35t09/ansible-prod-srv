@@ -698,18 +698,22 @@ It sits in `/srv/docker/system/traefik/`:
 
 `compose.yml`, `traefik.yml` and `dynamic/` belong to root with group `svc-docker` (0640/0750): the container reads them and cannot change them. `data/` (0700) and `logs/` (0750) belong to `svc-docker`.
 
-**Check the Traefik settings** / **Look up the Docker service user** / **Check that rootless Docker is configured**
+**Check the Traefik settings** / **Check the service network names** / **Look up the Docker service user** / **Check that rootless Docker is configured**
 Stops if the domain, the Cloudflare token or the dashboard users are missing, or if `svc-docker` does not exist yet (run `--tags docker` first).
 
 **Create the Traefik directories** / **Rotate the Traefik logs** / **Write the Cloudflare token** / **Write the static configuration** / **Write the dashboard route, middlewares and TLS options** / **Write the compose file**
 The files above. A change to the token or to the static configuration notifies **Restart Traefik**.
+
+**List the Docker networks** / **Create one internal network per service**
+For each name in `traefik_networks`, creates `proxy-<name>` with `--internal` if it does not exist. They are created here and not by compose, so they exist before Traefik and the service start, and survive either being recreated.
 
 **Start Traefik**
 `docker compose up --detach --remove-orphans --wait` as `svc-docker`. `--wait` waits for the health check (`traefik healthcheck --ping` on an internal entry point that is not published), so the task fails if Traefik does not come up. When the compose file is unchanged, nothing is recreated. With a new `traefik_image`, the container is recreated on the new version: that is all `--tags update-containers` does.
 
 ### Design choices
 
-- **No Docker socket.** The Docker provider would read labels from the containers, but it needs the socket, and access to the socket means control of every container: a bug in Traefik would become a takeover of the server. Routes come from the file provider instead: each service role writes `dynamic/<name>.yml` with its router and service, and Traefik reaches the container by name on the `proxy` network.
+- **No Docker socket.** The Docker provider would read labels from the containers, but it needs the socket, and access to the socket means control of every container: a bug in Traefik would become a takeover of the server. Routes come from the file provider instead: each service role writes `dynamic/<name>.yml` with its router and service.
+- **One network per service, not a shared one.** On a shared `proxy` network every service could talk to every other: one compromised application would reach all the others directly. Instead each service has its own `proxy-<name>` network that only Traefik and that service join, created `--internal` so it carries no traffic to the Internet. Traefik joins all of them, plus its own `default` network for Let's Encrypt and Cloudflare. Tested: Traefik reaches each service; two services cannot resolve or reach each other; a service has no Internet access through its network.
 - **One wildcard certificate** for `<domain>` and `*.<domain>`, set on the `websecure` entry point, so every router gets it with no TLS settings of its own. It is one certificate to renew instead of one per service, and the internal names (`vault.`, `photo.`) never appear in the public Certificate Transparency logs.
 - **DNS challenge** through Cloudflare: nothing needs to be reachable from the Internet. With egress filtered, Traefik cannot ask Cloudflare's authoritative name servers whether the record has propagated, so it asks only the internal resolvers (`network_dns_servers`, Unbound) (`disableANSChecks`).
 - **Hardening**: read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped except binding ports, `no-new-privileges`. In rootless Docker, root inside the container is `svc-docker` on the host.
@@ -720,8 +724,20 @@ The files above. A change to the token or to the static configuration notifies *
 
 ### Adding a service (for the application roles)
 
-1. In the service's compose file, join the external network: `networks: { proxy: { external: true } }`. Do not publish its ports.
-2. Write `/srv/docker/system/traefik/dynamic/<name>.yml`:
+1. Add the name to `traefik_networks` in `main.yml` and run `--tags traefik`: it creates `proxy-<name>` and attaches Traefik to it.
+2. In the service's compose file, put the container Traefik talks to on that network, and keep the others (the database) off it, on a network of their own:
+   ```yaml
+   services:
+     <name>:
+       networks: [proxy-<name>, default]
+     db:
+       networks: [default]
+   networks:
+     proxy-<name>:
+       external: true
+   ```
+   Do not publish its ports.
+3. Write `/srv/docker/system/traefik/dynamic/<name>.yml`:
    ```yaml
    http:
      routers:
@@ -735,7 +751,7 @@ The files above. A change to the token or to the static configuration notifies *
            servers:
              - url: "http://<container name>:<port>"
    ```
-3. Add the name to the internal DNS.
+4. Add the name to the internal DNS.
 
 Check: `sudo tail /srv/docker/system/traefik/logs/traefik.log`, the dashboard, and `curl -sI https://proxy.greyroom.net/dashboard/` from a client (401 without a password).
 
@@ -802,6 +818,7 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/usr/local/bin/docker-svc` | docker_rootless | Wrapper for the admin |
 | `/srv/docker/{system,app}/` | docker_rootless | Compose files and data of the containers |
 | `/srv/docker/system/traefik/` | traefik | Compose file, configuration, certificates, Cloudflare token, logs |
+| Docker networks `proxy-<name>` | traefik | One internal network per service in `traefik_networks` |
 | `/etc/logrotate.d/traefik` | traefik | Daily rotation of the Traefik logs |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |

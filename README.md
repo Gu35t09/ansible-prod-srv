@@ -151,6 +151,7 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
+| `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |
 | `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
@@ -173,8 +174,10 @@ The admin user has no access to the Docker socket. The `docker-svc` wrapper runs
 
 ```bash
 docker-svc ps
-docker-svc compose -f /srv/docker/app/<name>/compose.yml up -d
+docker-svc compose -f /srv/docker/app/<name>/compose.yml restart
 ```
+
+Each service behind Traefik has its own internal network, `proxy-<name>`, shared only with Traefik: services cannot reach each other. The full guide, with what to do by hand and what to change through Ansible, is [docs/containers.md](docs/containers.md).
 
 ## Outbound access needed
 
@@ -195,6 +198,8 @@ The YARA rules need no outbound access: they are copied from the repository. Ref
 ## Documentation
 
 [docs/walkthrough.md](docs/walkthrough.md) explains every role task by task: what it does, why, and how to check it.
+
+[docs/containers.md](docs/containers.md) explains how to operate the containers with `docker-svc`.
 
 [docs/maintenance.md](docs/maintenance.md) is the maintenance guide: calendar, what to do for each notification, routine procedures, troubleshooting and recovery.
 

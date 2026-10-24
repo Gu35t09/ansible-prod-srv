@@ -27,6 +27,14 @@
     fail_msg: "{{ docker_user }} does not exist: run the playbook with --tags docker first."
     quiet: true
 
+- name: Check the service network names
+  ansible.builtin.assert:
+    that:
+      - traefik_networks | select('match', '^[a-z0-9][a-z0-9_-]*$') | list | length == traefik_networks | length
+      - traefik_networks | unique | length == traefik_networks | length
+    fail_msg: "traefik_networks: lowercase names (letters, digits, - and _), each listed once."
+    quiet: true
+
 - name: Create the Traefik directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -85,6 +93,32 @@
     owner: root
     group: "{{ docker_user }}"
     mode: "0640"
+
+- name: List the Docker networks
+  ansible.builtin.command:
+    cmd: docker network ls --format '{{ "{{" }}.Name{{ "}}" }}'
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  register: traefik_existing_networks
+  changed_when: false
+
+# Created here, not by compose: they must exist before Traefik and the
+# service start, and outlive either being recreated. --internal: no route to
+# the Internet through them; Traefik reaches Let's Encrypt and Cloudflare on
+# its own default network.
+- name: Create one internal network per service
+  ansible.builtin.command:
+    cmd: docker network create --internal --label managed-by=ansible {{ item }}
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  loop: "{{ traefik_networks | map('regex_replace', '^', 'proxy-') | reject('in', traefik_existing_networks.stdout_lines) | list }}"
+  changed_when: true
 
 - name: Start Traefik
   ansible.builtin.command:

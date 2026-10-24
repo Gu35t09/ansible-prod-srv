@@ -174,6 +174,7 @@ docker-svc ps --filter name=traefik --format '{{.Names}} {{.Status}}'    # Up ..
 sudo grep -iE 'error|acme' /srv/docker/system/traefik/logs/traefik.log | tail   # no errors once the certificate is issued
 sudo tail -n 3 /srv/docker/system/traefik/logs/access.log                    # one line per HTTPS request (dashboard included), real client IP
 sudo ss -tlnp | grep -E ':(80|443) '                                         # on the services address once it is set
+docker-svc network ls --filter label=managed-by=ansible                      # one proxy-<name> per entry in traefik_networks
 ```
 
 From a client that resolves `proxy.greyroom.net` to the services address:

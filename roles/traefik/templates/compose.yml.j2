@@ -28,8 +28,13 @@ services:
       - ./logs:/logs
     tmpfs:
       - /tmp
+    # default: outbound to Let's Encrypt and Cloudflare. proxy-<name>: one
+    # internal network per service (traefik_networks).
     networks:
-      - proxy
+      - default
+{% for name in traefik_networks %}
+      - proxy-{{ name }}
+{% endfor %}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
@@ -37,10 +42,14 @@ services:
       retries: 3
       start_period: 10s
 
-# Services behind Traefik join this network (external: true in their compose).
+{% if traefik_networks | length > 0 %}
+# Created by the role; each service joins its own (external: true).
 networks:
-  proxy:
-    name: proxy
+{% for name in traefik_networks %}
+  proxy-{{ name }}:
+    external: true
+{% endfor %}
+{% endif %}
 
 secrets:
   cloudflare_dns_api_token:

@@ -17,6 +17,12 @@ traefik_dashboard_host: "proxy.{{ traefik_domain }}"
 # htpasswd lines with bcrypt hashes ("user:$2y$..."), from the vault.
 traefik_dashboard_users: []
 
+# Services Traefik routes to. Each gets its own internal network,
+# proxy-<name>, shared only by Traefik and that service: services never
+# reach each other through Traefik's networks. Add a name here (main.yml)
+# before deploying the service.
+traefik_networks: []
+
 # Address the ports are published on. Empty: every address (before the
 # services VLAN exists).
 traefik_bind_address: "{{ services_address | default('') }}"
