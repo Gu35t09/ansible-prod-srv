@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# Dynamic configuration of Traefik itself. Each service role adds its own
+# file next to this one, with its router and service.
+http:
+  routers:
+    dashboard:
+      rule: "Host(`{{ traefik_dashboard_host }}`)"
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - dashboard-auth
+
+  middlewares:
+    dashboard-auth:
+      basicAuth:
+        users:
+{% for user in traefik_dashboard_users %}
+          - "{{ user }}"
+{% endfor %}
+    # Applied to every router on websecure (see the static configuration).
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      # No certificate for names Traefik does not know.
+      sniStrict: true

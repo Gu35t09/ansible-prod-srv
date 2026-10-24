@@ -11,6 +11,14 @@ vault_telegram_chat_id: "123456789"
 #   openssl rand -base64 33
 # Keep a copy outside the server: without it the backups cannot be read.
 vault_restic_password: "REPLACE_ME"
+# Cloudflare API token for the Let's Encrypt DNS challenge, limited to the
+# greyroom.net zone: Zone / Zone / Read and Zone / DNS / Edit.
+vault_cloudflare_dns_api_token: "REPLACE_ME"
+# Traefik dashboard users, bcrypt htpasswd lines:
+#   podman run --rm docker.io/library/httpd:2.4 htpasswd -nbB admin 'password'
+vault_traefik_dashboard_users:
+  - "admin:$2y$05$REPLACE_ME"
+
 # S3 key limited to the backup bucket.
 vault_backup_s3_access_key: "REPLACE_ME"
 vault_backup_s3_secret_key: "REPLACE_ME"

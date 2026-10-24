@@ -1,0 +1,31 @@
+---
+# Pinned by tag and digest: an update is a change in this file (Renovate),
+# applied with --tags update-containers.
+traefik_image: "docker.io/library/traefik:v3.7.16@sha256:c8a121e4bb1347e8fd52657fab12f2cb70b68f8a018895e2068f92c9e519b9c2"
+
+docker_user: "svc-docker"
+traefik_dir: /srv/docker/system/traefik
+
+# One wildcard certificate for the domain and its first-level subdomains.
+# Every service gets <name>.<traefik_domain>; the internal names never show
+# up in the public Certificate Transparency logs.
+traefik_domain: ""
+traefik_dashboard_host: "proxy.{{ traefik_domain }}"
+# htpasswd lines with bcrypt hashes ("user:$2y$..."), from the vault.
+traefik_dashboard_users: []
+
+# Address the ports are published on. Empty: every address (before the
+# services VLAN exists).
+traefik_bind_address: "{{ services_address | default('') }}"
+
+# Let's Encrypt with the Cloudflare DNS challenge. The token needs
+# Zone / Zone / Read and Zone / DNS / Edit, on this zone only.
+cloudflare_dns_api_token: ""
+# Optional: Let's Encrypt account e-mail.
+traefik_acme_email: ""
+# For tests, the staging CA avoids the production rate limits:
+#   https://acme-staging-v02.api.letsencrypt.org/directory
+traefik_acme_ca_server: "https://acme-v02.api.letsencrypt.org/directory"
+# Resolvers for the propagation check. With egress filtered, the authoritative
+# Cloudflare name servers are unreachable, so only these are asked.
+traefik_acme_resolvers: "{{ network_dns_servers | default([]) | map('regex_replace', '$', ':53') | list }}"

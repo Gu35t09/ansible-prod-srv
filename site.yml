@@ -50,5 +50,9 @@
       tags: [yara]
     - role: backup
       tags: [backup]
+    # Container services last: missing settings for one of them (tokens,
+    # passwords) never keep the host roles above from being applied.
+    - role: traefik
+      tags: [traefik, update-containers]
     - role: update_os
       tags: [update-os, never]

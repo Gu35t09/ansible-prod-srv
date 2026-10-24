@@ -23,6 +23,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── network/                      # VLAN trunk, source routing, rollback (tag: network)
 │   ├── firewall_host/                # nftables, inbound deny by default
 │   ├── docker_rootless/              # Docker for a dedicated service user
+│   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
 │   ├── notify/                       # Telegram helper shared by the other roles
 │   ├── clamav/                       # daemon, scheduled scan, quarantine
 │   ├── monitoring/                   # SMART and disk space alerts
@@ -43,6 +44,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
 | `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 53/80/443 only to the services address; forwarding off; outbound left to OPNsense. |
 | `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
+| `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
@@ -56,7 +58,8 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,traefik,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
@@ -86,6 +89,16 @@ ansible-vault edit inventory/group_vars/prod_servers/vault.yml
 ```
 
 Then edit `inventory/hosts.ini` (management IP and user) and `inventory/group_vars/prod_servers/main.yml`.
+
+For Traefik you need, before the first run:
+
+- **A Cloudflare API token** limited to the zone, with *Zone → Zone → Read* and *Zone → DNS → Edit*, in the vault as `vault_cloudflare_dns_api_token`.
+- **The dashboard password**, as a bcrypt htpasswd line in `vault_traefik_dashboard_users`:
+  ```bash
+  podman run --rm docker.io/library/httpd:2.4 htpasswd -nbB admin '<password>'
+  ```
+- **Internal DNS names** pointing to the services address (`proxy.greyroom.net` for the dashboard, then one per service), as host overrides in Unbound on OPNsense until Technitium is in place.
+- `api.cloudflare.com` and `acme-v02.api.letsencrypt.org` allowed on OPNsense.
 
 For the backup you need, before the first run:
 
@@ -137,6 +150,8 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
 | `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
+| `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
+| `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
 | `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
@@ -172,6 +187,7 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
 | `database.clamav.net` | freshclam |
 | `api.telegram.org` | notifications |
+| `api.cloudflare.com`, `acme-v02.api.letsencrypt.org` | Traefik certificates (DNS challenge) |
 | the S3 endpoint (`backup_s3_endpoint`) | backup |
 
 The YARA rules need no outbound access: they are copied from the repository. Refresh them on the laptop with `scripts/update-yara-rules.sh` (see the maintenance guide).

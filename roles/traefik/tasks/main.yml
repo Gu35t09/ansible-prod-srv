@@ -1,0 +1,89 @@
+---
+# Traefik in front of every container service. Routes come only from files in
+# <traefik_dir>/dynamic/ (one per service, written by its role): Traefik gets
+# no access to the Docker socket, which would mean control of every container.
+
+- name: Check the Traefik settings
+  ansible.builtin.assert:
+    that:
+      - traefik_domain | length > 0
+      - cloudflare_dns_api_token | length > 0
+      - traefik_dashboard_users | length > 0
+    fail_msg: >-
+      Set traefik_domain, and in the vault vault_cloudflare_dns_api_token and
+      vault_traefik_dashboard_users (see the README, "Traefik").
+    quiet: true
+
+- name: Look up the Docker service user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ docker_user }}"
+    fail_key: false
+
+- name: Check that rootless Docker is configured
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_passwd'][docker_user] is not none
+    fail_msg: "{{ docker_user }} does not exist: run the playbook with --tags docker first."
+    quiet: true
+
+- name: Create the Traefik directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ docker_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ traefik_dir }}", owner: root, mode: "0750" }
+    - { path: "{{ traefik_dir }}/dynamic", owner: root, mode: "0750" }
+    # Certificates (acme.json) and the Cloudflare token: the service user only.
+    - { path: "{{ traefik_dir }}/data", owner: "{{ docker_user }}", mode: "0700" }
+
+- name: Write the Cloudflare token
+  ansible.builtin.copy:
+    dest: "{{ traefik_dir }}/data/cloudflare-dns-api-token"
+    content: "{{ cloudflare_dns_api_token }}"
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart Traefik
+
+- name: Write the static configuration
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: "{{ traefik_dir }}/traefik.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
+  notify: Restart Traefik
+
+# Traefik watches this directory: changes apply without a restart.
+- name: Write the dashboard route, middlewares and TLS options
+  ansible.builtin.template:
+    src: dynamic-traefik.yml.j2
+    dest: "{{ traefik_dir }}/dynamic/traefik.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
+
+- name: Write the compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ traefik_dir }}/compose.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
+
+- name: Start Traefik
+  ansible.builtin.command:
+    cmd: docker compose --file {{ traefik_dir }}/compose.yml up --detach --remove-orphans --wait
+    chdir: "{{ traefik_dir }}"
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  register: traefik_up
+  changed_when: traefik_up.stderr is search('Creat|Recreat|Start')

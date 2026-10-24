@@ -20,11 +20,12 @@ Contents:
 12. [Role: integrity](#12-role-integrity)
 13. [Role: yara](#13-role-yara)
 14. [Role: backup](#14-role-backup)
-15. [Role: update_os](#15-role-update_os)
-16. [The pre-commit hook](#16-the-pre-commit-hook)
-17. [Files the playbook creates on the server](#17-files-the-playbook-creates-on-the-server)
-18. [Known limits and points to review](#18-known-limits-and-points-to-review)
-19. [How it was tested](#19-how-it-was-tested)
+15. [Role: traefik](#15-role-traefik)
+16. [Role: update_os](#16-role-update_os)
+17. [The pre-commit hook](#17-the-pre-commit-hook)
+18. [Files the playbook creates on the server](#18-files-the-playbook-creates-on-the-server)
+19. [Known limits and points to review](#19-known-limits-and-points-to-review)
+20. [How it was tested](#20-how-it-was-tested)
 
 ---
 
@@ -36,13 +37,14 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`).
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`), then `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`).
 
 The order matters:
 
 - `hardening` runs before `firewall_host`, so SSH is already restricted when the firewall comes up.
 - `network` sits before `firewall_host`, so when you run them together the firewall sees the final addresses.
 - `docker_rootless` needs the `acl` package that `base` installs.
+- The container services come after every host role: if one of them is missing a setting (a token, a password), the play stops there, and the host is already configured.
 
 ### Tags
 
@@ -52,6 +54,7 @@ The order matters:
 | `hardening`, `security` | hardening |
 | `firewall`, `security` | firewall_host |
 | `docker` | docker_rootless |
+| `traefik`, `update-containers` | traefik |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
@@ -678,7 +681,66 @@ What protects the copies:
 
 ---
 
-## 15. Role: update_os
+## 15. Role: traefik
+
+Purpose: the single entry point for every container service. It terminates TLS with a Let's Encrypt certificate and forwards each request to the right container.
+
+It sits in `/srv/docker/system/traefik/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | The container |
+| `traefik.yml` | Static configuration (entry points, certificate resolver), read at startup |
+| `dynamic/` | Routes, middlewares, TLS options; watched, changes apply without a restart |
+| `data/acme.json` | Certificates and the Let's Encrypt account key (created by Traefik) |
+| `data/cloudflare-dns-api-token` | The token, mounted as a secret |
+
+`compose.yml`, `traefik.yml` and `dynamic/` belong to root with group `svc-docker` (0640/0750): the container reads them and cannot change them. `data/` belongs to `svc-docker`, mode 0700.
+
+**Check the Traefik settings** / **Look up the Docker service user** / **Check that rootless Docker is configured**
+Stops if the domain, the Cloudflare token or the dashboard users are missing, or if `svc-docker` does not exist yet (run `--tags docker` first).
+
+**Create the Traefik directories** / **Write the Cloudflare token** / **Write the static configuration** / **Write the dashboard route, middlewares and TLS options** / **Write the compose file**
+The files above. A change to the token or to the static configuration notifies **Restart Traefik**.
+
+**Start Traefik**
+`docker compose up --detach --remove-orphans --wait` as `svc-docker`. `--wait` waits for the health check (`traefik healthcheck --ping` on an internal entry point that is not published), so the task fails if Traefik does not come up. When the compose file is unchanged, nothing is recreated. With a new `traefik_image`, the container is recreated on the new version: that is all `--tags update-containers` does.
+
+### Design choices
+
+- **No Docker socket.** The Docker provider would read labels from the containers, but it needs the socket, and access to the socket means control of every container: a bug in Traefik would become a takeover of the server. Routes come from the file provider instead: each service role writes `dynamic/<name>.yml` with its router and service, and Traefik reaches the container by name on the `proxy` network.
+- **One wildcard certificate** for `<domain>` and `*.<domain>`, set on the `websecure` entry point, so every router gets it with no TLS settings of its own. It is one certificate to renew instead of one per service, and the internal names (`vault.`, `photo.`) never appear in the public Certificate Transparency logs.
+- **DNS challenge** through Cloudflare: nothing needs to be reachable from the Internet. With egress filtered, Traefik cannot ask Cloudflare's authoritative name servers whether the record has propagated, so it asks only the internal resolvers (`network_dns_servers`, Unbound) (`disableANSChecks`).
+- **Hardening**: read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped except binding ports, `no-new-privileges`. In rootless Docker, root inside the container is `svc-docker` on the host.
+- **Ports 80 and 443 on `services_address` only.** Port 80 only redirects to HTTPS.
+- **For every router on `websecure`**: HSTS for a year, including subdomains, and `nosniff`. TLS 1.2 or later; `sniStrict` refuses names Traefik has no certificate for.
+- **The access log** goes to the container log (capped by `daemon.json`), with the real client IP thanks to the slirp4netns port driver.
+- **Dashboard** on `proxy.<domain>`, behind basic authentication with bcrypt hashes from the vault. It shows the routes and their errors, and changes nothing.
+
+### Adding a service (for the application roles)
+
+1. In the service's compose file, join the external network: `networks: { proxy: { external: true } }`. Do not publish its ports.
+2. Write `/srv/docker/system/traefik/dynamic/<name>.yml`:
+   ```yaml
+   http:
+     routers:
+       <name>:
+         rule: "Host(`<name>.greyroom.net`)"
+         entryPoints: [websecure]
+         service: <name>
+     services:
+       <name>:
+         loadBalancer:
+           servers:
+             - url: "http://<container name>:<port>"
+   ```
+3. Add the name to the internal DNS.
+
+Check: `docker-svc logs traefik`, the dashboard, and `curl -I https://proxy.greyroom.net` from a client (401 without a password).
+
+---
+
+## 16. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -710,13 +772,13 @@ Container images are **not** updated here: they will follow the `update-containe
 
 ---
 
-## 16. The pre-commit hook
+## 17. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 17. Files the playbook creates on the server
+## 18. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -738,6 +800,7 @@ Container images are **not** updated here: they will follow the `update-containe
 | `~svc-docker/.config/systemd/user/docker.service` | docker_rootless | Rootless daemon |
 | `/usr/local/bin/docker-svc` | docker_rootless | Wrapper for the admin |
 | `/srv/docker/{system,app}/` | docker_rootless | Compose files and data of the containers |
+| `/srv/docker/system/traefik/` | traefik | Compose file, configuration, certificates, Cloudflare token |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -758,7 +821,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 18. Known limits and points to review
+## 19. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -772,6 +835,8 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **No full file integrity database (AIDE).** It would flag every security update that unattended-upgrades installs. The integrity role checks instead the specific things Ebury-style implants change, and the monthly `--check --diff` run catches drift in the managed files.
 - **The YARA rules change only when you refresh them** with `scripts/update-yara-rules.sh`; the server does not download them.
 - **The memory scan covers OpenSSH and suspicious processes only**, not every container process.
+- **One certificate for every name.** If the wildcard expires (DNS challenge failing for weeks), every service fails at once. Monitoring certificate expiry is an open point (Uptime Kuma).
+- **The dashboard is protected by a password only**; it is reachable only through WireGuard, like everything else.
 - **The backup is file-level.** Databases are consistent only through the dump scripts in `/etc/backup/pre.d/`; a database file copied while it is written may not restore. Every application role must add its dump script.
 - **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
 - **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
@@ -779,7 +844,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 19. How it was tested
+## 20. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -817,6 +882,20 @@ The `backup` role was tested in the same container, with an S3 server (rclone `s
 | `backup usb restore` and `backup s3 restore` | Files identical to the originals |
 
 Bug found and fixed: the USB disk was never unmounted, because the mount ran in a subshell.
+
+The `traefik` templates were rendered by Ansible and run with Docker Compose (podman, rootless) on the laptop, with a fake Cloudflare token:
+
+| Test | Result |
+| --- | --- |
+| Start with `--wait` | Healthy; the only error is the expected ACME failure (fake token) |
+| HTTP | 301 to HTTPS |
+| Dashboard without password, with the right one, with a wrong one | 401, 200, 401 |
+| Response headers | HSTS (1 year, subdomains) and `nosniff` |
+| Unknown host name, TLS 1.1 | 404, refused |
+| `sniStrict` with no valid certificate yet | TLS refused, as intended |
+| Container settings | Read-only root filesystem, capabilities dropped |
+
+Not tested: a real certificate (needs the token and the domain), on the lab VM with `--tags traefik`.
 
 Bugs found and fixed during these tests: the rules and the compiled rules matching themselves; ESET's SSHDoor rules matching a clean sshd in memory; packaged symlinks hiding the implant they point to; Ansible's `fileglob` not matching subdirectories, which emptied the rule directory.
 
