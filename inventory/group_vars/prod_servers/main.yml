@@ -54,3 +54,14 @@ network_dns_servers:
 # --- Notifications ------------------------------------------------------------
 telegram_bot_token: "{{ vault_telegram_bot_token }}"
 telegram_chat_id: "{{ vault_telegram_chat_id }}"
+
+# --- Backup (restic) -----------------------------------------------------------
+# Copy 1: USB disk formatted with this filesystem label (see the README).
+backup_usb_label: "backup-usb"
+# Copy 2: S3 bucket. Allow the endpoint on OPNsense. Turn on object lock or
+# versioning on the bucket, so a compromised server cannot erase the history.
+backup_s3_endpoint: ""
+backup_s3_bucket: ""
+restic_password: "{{ vault_restic_password | default('') }}"
+backup_s3_access_key: "{{ vault_backup_s3_access_key | default('') }}"
+backup_s3_secret_key: "{{ vault_backup_s3_secret_key | default('') }}"

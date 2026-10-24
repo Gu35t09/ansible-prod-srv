@@ -31,6 +31,7 @@ Contents:
 | Disk space check | Every 15 minutes | Telegram when a threshold is crossed |
 | Integrity check (NTP, sshd logging, libraries, Ebury) | Every 15 minutes | Telegram when the findings change, then daily while they last |
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
+| Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays | Telegram at every run |
 
 Nothing in this list reboots the server or updates container images. Those happen only through the `update-os` job and, later, `update-containers`.
 
@@ -38,7 +39,7 @@ Nothing in this list reboots the server or updates container images. Those happe
 
 ### Every day (one minute)
 
-- Read the Telegram messages. A daily "✅ CLAMAV: SCAN CLEAN" is the sign that the server, the scan and the notifications all work: **if it does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message).
+- Read the Telegram messages. Two arrive every day: "✅ CLAMAV: SCAN CLEAN" and "✅ BACKUP OK". They show that the server, the scans, the backup and the notifications all work: **if one does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message) and [Backup failed](#backup-failed).
 
 ### Every week
 
@@ -73,6 +74,8 @@ Nothing in this list reboots the server or updates container images. Those happe
 - Check the ClamAV quarantine and empty it once each file has been examined (see [Malware detected](#malware-detected)).
 - Test that notifications work end to end: `sudo notify-telegram "Quarterly test from $(hostname)"`.
 - Run the EICAR test from `verify.md` section 8, and the YARA one from section 12.
+- **Restore test**: restore one application directory from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
+- Check that object lock or versioning is still on for the bucket, and look at its size and cost.
 - Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
 - Check that the copy of the emergency secrets is still readable and up to date (backup password, Ansible Vault password, the admin user's console password).
 
@@ -183,6 +186,23 @@ Message: `🚨 YARA: <n> MATCH(ES)`. Each line is a rule name and a file, or a r
 
 Message: `❌ YARA: SCAN ERROR`. Usually the rules do not compile after a refresh: run `sudo yara-scan --compile-only` and read the error, then fix or drop the rule on the laptop and run the playbook with `--tags yara`.
 
+### Backup failed
+
+Message: `❌ BACKUP FAILED` or `⚠️ BACKUP COMPLETED WITH WARNINGS`. Each copy has its own line; the other copy may well have succeeded.
+
+| Line | Cause | What to do |
+| --- | --- | --- |
+| `USB disk not connected` | Disk unplugged, cable, or a different label | Plug it in, `ls /dev/disk/by-label/`, then `sudo systemctl start backup.service` |
+| `cannot mount` | Filesystem damaged | `sudo fsck.ext4 /dev/disk/by-label/backup-usb`; if it cannot be repaired, replace the disk ([Replace the USB disk](#replace-the-usb-disk)) |
+| `the repository does not exist` | A new disk or bucket, or the repository was deleted | New: `sudo backup --init`. Not new: someone deleted it, see [Suspected compromise](#suspected-compromise); for S3, the old versions are still in the bucket if object lock or versioning is on |
+| S3 errors (`Access Denied`, timeouts) | Key revoked or expired, bucket policy, endpoint not allowed on OPNsense | Check the key at the provider and the OPNsense log, then run the backup by hand |
+| `repository is already locked` | A previous run was interrupted (reboot, power cut) | `sudo backup usb list locks` or `sudo backup s3 list locks`, then `sudo backup <copy> unlock` |
+| `prune or check failed` | Damaged repository data (disk errors on USB, rare on S3) | `sudo backup <copy> check --read-data`; if it reports damaged data, start a new repository on that copy and keep the old one until the new one has a few weeks of history |
+| `some files could not be read` | A file vanished or changed during the backup | Harmless once in a while; if it repeats, see which file in `journalctl -u backup.service` |
+| `Pre-backup scripts: at least one failed` | An application's dump failed (container down, database error) | `journalctl -u backup.service`, fix the application; the previous dump was backed up |
+
+Run the backup by hand: `sudo systemctl start backup.service`, then `journalctl -u backup.service -n 50`.
+
 ### SMART warning
 
 Message: `💽 SMART WARNING`. It contains the failure type (`SMARTD_FAILTYPE`) and the details.
@@ -255,6 +275,32 @@ On the laptop, which can reach GitHub:
 3. Review `git diff --stat roles/yara/files/rules` (new and removed rules) and commit.
 4. `ansible-playbook site.yml --tags yara --ask-vault-pass`. The play compiles the rules on the server and fails if one is broken.
 5. Run a scan by hand (`sudo systemctl start yara-scan.service`) to see whether the new rules flag anything.
+
+### Restore files
+
+The `backup` script loads the credentials and mounts the disk:
+
+```bash
+sudo backup usb snapshots                       # or: sudo backup s3 snapshots
+sudo backup usb restore latest --target /tmp/restore --include /srv/apps/<app>
+sudo diff -r /tmp/restore/srv/apps/<app> /srv/apps/<app>    # restore test: compare
+sudo rm -rf /tmp/restore
+```
+
+To put data back in place, stop the application first, restore into a temporary directory, then move the files (or restore with `--target /`, which overwrites the current files). A snapshot from a specific day: take its ID from `snapshots` instead of `latest`.
+
+### Replace the USB disk
+
+1. Format the new disk with the label (README, "First setup") and plug it in.
+2. `sudo backup --init`, then `sudo systemctl start backup.service`.
+3. Keep the old disk, unplugged, until the new one has a few weeks of history.
+
+To keep a copy away from the house, you can rotate two labelled disks: each starts with `backup --init` and from then on gets backed up whenever it is plugged in.
+
+### Change the backup password or the S3 key
+
+- **S3 key**: create the new key at the provider, update the vault, run `--tags backup`, revoke the old key.
+- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from each copy (`sudo backup <copy> key list`, `sudo backup <copy> key remove <ID>`). Update the emergency sheet.
 
 ### Change the network (VLANs, addresses)
 
@@ -388,7 +434,7 @@ This is also the yearly drill, on a lab VM.
 3. Remove the old host key from your `known_hosts`, since the server has a new one: `ssh-keygen -R <management IP>`.
 4. `ansible-playbook site.yml --ask-vault-pass`.
 5. `ansible-playbook site.yml --tags network --ask-vault-pass` to move to the VLANs, then `--tags security`.
-6. Restore the data from the backup and deploy the applications (procedure to be written together with the backup and application roles).
+6. Restore the data: `sudo backup usb restore latest --target /` (or `s3`, if the USB disk is lost too), then deploy the applications (procedure to be completed with the application roles). The playbook run in step 4 already wrote the credentials, so the restore needs only the vault.
 7. Check everything with `verify.md`.
 8. Note how long it took and what was missing from this guide, then update it.
 
@@ -419,4 +465,5 @@ This is also the yearly drill, on a lab VM.
 | Integrity check | `journalctl -u integrity-check.service`, state in `/var/lib/integrity-check/state` |
 | YARA scans | `/var/log/yara/scan_*.log`, `journalctl -u yara-scan.service` |
 | Time synchronization | `timedatectl timesync-status` |
+| Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |
 | Errors in the last 24 hours | `journalctl -p err --since -24h` |

@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=restic backup to the USB disk and S3, with Telegram notification
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

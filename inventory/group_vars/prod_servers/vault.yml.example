@@ -6,3 +6,11 @@
 
 vault_telegram_bot_token: "123456789:REPLACE_ME"
 vault_telegram_chat_id: "123456789"
+
+# restic password for both backup copies (at least 20 characters), e.g.
+#   openssl rand -base64 33
+# Keep a copy outside the server: without it the backups cannot be read.
+vault_restic_password: "REPLACE_ME"
+# S3 key limited to the backup bucket.
+vault_backup_s3_access_key: "REPLACE_ME"
+vault_backup_s3_secret_key: "REPLACE_ME"

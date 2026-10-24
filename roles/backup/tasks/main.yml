@@ -1,0 +1,83 @@
+---
+# Daily restic backup to two encrypted repositories: an external USB disk and
+# an S3 bucket. Applications add their database dumps as scripts in
+# /etc/backup/pre.d/, which run before each backup.
+
+- name: Check the backup settings
+  ansible.builtin.assert:
+    that:
+      - backup_usb_enabled | bool or backup_s3_enabled | bool
+      - restic_password | length >= 20
+      - not backup_s3_enabled | bool or (backup_s3_endpoint | length > 0 and backup_s3_bucket | length > 0)
+      - not backup_s3_enabled | bool or (backup_s3_access_key | length > 0 and backup_s3_secret_key | length > 0)
+      - backup_paths | length > 0
+    fail_msg: >-
+      Enable at least one copy, set vault_restic_password (20 characters or more)
+      and, for S3, backup_s3_endpoint, backup_s3_bucket and the access keys
+      (vault_backup_s3_access_key, vault_backup_s3_secret_key).
+    quiet: true
+
+- name: Install restic
+  ansible.builtin.apt:
+    name: restic
+    state: present
+
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /etc/backup
+    - /etc/backup/pre.d
+    - /var/cache/restic
+    - "{{ backup_usb_mountpoint }}"
+
+- name: Write the backup credentials
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: "{{ backup_env_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: /usr/local/sbin/backup
+    owner: root
+    group: root
+    mode: "0750"
+
+# Only an explicit --init creates a repository: if one disappears later, the
+# nightly run fails and says so instead of starting an empty one.
+- name: Initialize the repositories that do not exist yet
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/backup --init
+  register: backup_init
+  changed_when: "'created' in backup_init.stdout"
+
+- name: Show the repository status
+  ansible.builtin.debug:
+    msg: "{{ backup_init.stdout_lines }}"
+
+- name: Install the backup service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - backup.service
+    - backup.timer
+
+- name: Enable the scheduled backup
+  ansible.builtin.systemd_service:
+    name: backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

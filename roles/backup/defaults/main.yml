@@ -1,0 +1,40 @@
+---
+# systemd OnCalendar expression. Default: daily at 02:30.
+backup_on_calendar: "*-*-* 02:30:00"
+# Day of the week (1 = Monday ... 7 = Sunday) for pruning old snapshots and
+# checking the repositories, after that day's backup.
+backup_maintenance_weekday: 7
+
+# What to back up. Application data lives under /srv (one directory per
+# application, with its database dumps); /etc is small and keeps the
+# server's state as it was on the day.
+backup_paths:
+  - /srv
+  - /etc
+backup_exclude: []
+
+# Snapshots kept by "restic forget".
+backup_keep_daily: 7
+backup_keep_weekly: 4
+backup_keep_monthly: 12
+
+# One password for both repositories (restic always encrypts). Keep a copy
+# outside the server: without it the backups cannot be read.
+restic_password: ""
+
+# Copy 1: external USB disk, found by its filesystem label and mounted only
+# while the backup runs.
+backup_usb_enabled: true
+backup_usb_label: "backup-usb"
+backup_usb_mountpoint: /mnt/backup-usb
+
+# Copy 2: S3-compatible bucket (Backblaze B2, Hetzner, Wasabi, AWS...).
+backup_s3_enabled: true
+backup_s3_endpoint: ""          # e.g. s3.eu-central-003.backblazeb2.com
+backup_s3_bucket: ""
+backup_s3_prefix: "{{ inventory_hostname }}"
+backup_s3_region: ""            # only if the provider requires it
+backup_s3_access_key: ""
+backup_s3_secret_key: ""
+
+backup_env_file: /etc/homelab/backup.env

@@ -1,0 +1,255 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# restic backup of the configured paths to two encrypted repositories: the
+# external USB disk (mounted only while the script runs) and an S3 bucket.
+# The two copies are independent: a failure of one does not stop the other.
+# Usage: backup          run the scripts in /etc/backup/pre.d, back up, clean
+#                        up old snapshots, report on Telegram
+#        backup --init   create the repositories that do not exist yet
+#        backup usb|s3 <restic command>   run restic on one copy (restores)
+# Exit codes: 0 every copy succeeded (possibly with warnings), 1 a copy failed.
+set -u
+export LC_ALL=C
+
+ENV_FILE={{ backup_env_file | quote }}
+USB_ENABLED={{ backup_usb_enabled | bool | string | lower | quote }}
+USB_DEVICE=/dev/disk/by-label/{{ backup_usb_label | quote }}
+USB_MOUNTPOINT={{ backup_usb_mountpoint | quote }}
+S3_ENABLED={{ backup_s3_enabled | bool | string | lower | quote }}
+S3_REPOSITORY={{ ('s3:https://' ~ (backup_s3_endpoint | regex_replace('^https?://', '') | regex_replace('/+$', '')) ~ '/' ~ backup_s3_bucket ~ '/' ~ backup_s3_prefix) | quote }}
+CONFIGURED_PATHS=({% for path in backup_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
+EXCLUDES=({% for pattern in backup_exclude %}{{ pattern | quote }}{{ ' ' if not loop.last }}{% endfor %})
+KEEP=(--keep-daily {{ backup_keep_daily | int }} --keep-weekly {{ backup_keep_weekly | int }} --keep-monthly {{ backup_keep_monthly | int }})
+MAINTENANCE_WEEKDAY={{ backup_maintenance_weekday | int }}
+PRE_DIR=/etc/backup/pre.d
+HOST=$(hostname)
+# Jinja stops here: the rest is plain bash, where array lengths look like Jinja comments.
+{% raw %}
+
+export RESTIC_CACHE_DIR=/var/cache/restic
+if [ ! -r "$ENV_FILE" ]; then
+    echo "backup: $ENV_FILE not readable" >&2
+    exit 1
+fi
+set -a
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+set +a
+
+USB_REPOSITORY="$USB_MOUNTPOINT/restic"
+MOUNTED_HERE=false
+USB_ERROR=""
+
+# Mounts the USB disk unless it is already mounted. On failure the reason is
+# in USB_ERROR. Not called in $(...): MOUNTED_HERE must survive.
+usb_mount() {
+    if mountpoint -q "$USB_MOUNTPOINT"; then
+        return 0
+    fi
+    if [ ! -e "$USB_DEVICE" ]; then
+        USB_ERROR="USB disk not connected ($USB_DEVICE missing)"
+        return 1
+    fi
+    if ! mount -o noexec,nosuid,nodev "$USB_DEVICE" "$USB_MOUNTPOINT"; then
+        USB_ERROR="cannot mount $USB_DEVICE on $USB_MOUNTPOINT"
+        return 1
+    fi
+    MOUNTED_HERE=true
+}
+
+# Unmounts the disk only if this script mounted it, so it can be unplugged.
+usb_umount() {
+    if [ "$MOUNTED_HERE" = true ]; then
+        sync
+        umount "$USB_MOUNTPOINT" || echo "backup: cannot unmount $USB_MOUNTPOINT" >&2
+        MOUNTED_HERE=false
+    fi
+}
+trap usb_umount EXIT
+
+# restic exit code 10: the repository does not exist.
+repository_state() {
+    local output rc
+    output=$(restic -r "$1" cat config 2>&1 >/dev/null)
+    rc=$?
+    case $rc in
+        0) echo exists ;;
+        10) echo missing ;;
+        *) echo "error: $(tail -n 1 <<< "$output")" ;;
+    esac
+}
+
+# ------------------------------------------------------------------- --init
+init_repository() {
+    local name=$1 repository=$2 state
+    state=$(repository_state "$repository")
+    case $state in
+        exists) echo "$name: repository exists" ;;
+        missing)
+            if restic -r "$repository" init > /dev/null; then
+                echo "$name: repository created"
+            else
+                echo "$name: cannot create the repository"
+                return 1
+            fi
+            ;;
+        *) echo "$name: $state"; return 1 ;;
+    esac
+}
+
+# ---------------------------------------------------------- usb / s3 <args>
+# Any restic command on one repository, with credentials and mount handled:
+#   backup usb snapshots
+#   backup s3 restore latest --target /tmp/restore --include /srv/apps/vaultwarden
+case "${1:-}" in
+    usb)
+        shift
+        usb_mount || { echo "backup: ${USB_ERROR}" >&2; exit 1; }
+        restic -r "$USB_REPOSITORY" "$@"
+        exit $?    # the EXIT trap unmounts the disk
+        ;;
+    s3)
+        shift
+        restic -r "$S3_REPOSITORY" "$@"
+        exit $?
+        ;;
+esac
+
+if [ "${1:-}" = "--init" ]; then
+    status=0
+    if [ "$USB_ENABLED" = true ]; then
+        if usb_mount; then
+            init_repository USB "$USB_REPOSITORY" || status=1
+            usb_umount
+        else
+            # Not an error at deploy time: the disk may be unplugged.
+            echo "USB: skipped, ${USB_ERROR}. Run 'sudo backup --init' once it is connected."
+        fi
+    fi
+    if [ "$S3_ENABLED" = true ]; then
+        init_repository S3 "$S3_REPOSITORY" || status=1
+    fi
+    exit $status
+fi
+
+# ------------------------------------------------------------------- backup
+REPORT=()
+FAILED=false
+WARNED=false
+
+# Application hooks: database dumps written under /srv before the backup.
+if [ -n "$(find "$PRE_DIR" -mindepth 1 -maxdepth 1 -type f -executable 2>/dev/null)" ]; then
+    echo "Running the scripts in $PRE_DIR"
+    if run-parts --report "$PRE_DIR"; then
+        REPORT+=("✅ Pre-backup scripts: OK")
+    else
+        REPORT+=("⚠️ Pre-backup scripts: at least one failed, the previous dump is backed up instead (journalctl -u backup.service)")
+        WARNED=true
+    fi
+fi
+
+PATHS=()
+for path in "${CONFIGURED_PATHS[@]}"; do
+    if [ -e "$path" ]; then
+        PATHS+=("$path")
+    else
+        echo "WARNING: $path does not exist, skipped."
+    fi
+done
+EXCLUDE_ARGS=(--exclude-caches)
+for pattern in "${EXCLUDES[@]}"; do
+    EXCLUDE_ARGS+=(--exclude "$pattern")
+done
+MAINTENANCE=false
+[ "$(date +%u)" -eq "$MAINTENANCE_WEEKDAY" ] && MAINTENANCE=true
+
+# Backs up to one repository, then forgets old snapshots (and on the
+# maintenance day prunes and checks). Adds one line to the report.
+backup_to() {
+    local name=$1 repository=$2 state output rc start snapshot added files elapsed extra=""
+    start=$(date +%s)
+    echo "=== $name: $repository"
+
+    state=$(repository_state "$repository")
+    if [ "$state" = missing ]; then
+        REPORT+=("❌ ${name}: the repository does not exist. If this is a new disk or bucket, run 'sudo backup --init'; otherwise it was deleted.")
+        FAILED=true
+        return
+    elif [ "$state" != exists ]; then
+        REPORT+=("❌ ${name}: ${state}")
+        FAILED=true
+        return
+    fi
+
+    output=$(restic -r "$repository" backup "${EXCLUDE_ARGS[@]}" "${PATHS[@]}" 2>&1)
+    rc=$?
+    echo "$output"
+    snapshot=$(grep -oE 'snapshot [0-9a-f]+ saved' <<< "$output" | awk '{ print $2 }')
+    added=$(sed -nE 's/^Added to the repository: ([^(]*[^ (]).*/\1/p' <<< "$output")
+    files=$(sed -nE 's/^Files: +([0-9]+) new, +([0-9]+) changed.*/\1 new, \2 changed/p' <<< "$output")
+
+    if [ $rc -ne 0 ] && [ $rc -ne 3 ]; then
+        REPORT+=("❌ ${name}: backup failed (restic exit code ${rc}): $(grep -iE 'fatal|error' <<< "$output" | tail -n 1)")
+        FAILED=true
+        return
+    fi
+
+    if ! output=$(restic -r "$repository" forget "${KEEP[@]}" 2>&1); then
+        echo "$output"
+        extra+=", cleanup of old snapshots failed"
+        WARNED=true
+    fi
+    if [ "$MAINTENANCE" = true ]; then
+        if output=$(restic -r "$repository" prune 2>&1 && restic -r "$repository" check 2>&1); then
+            extra+=", prune and check OK"
+        else
+            echo "$output"
+            REPORT+=("❌ ${name}: snapshot ${snapshot} saved, but prune or check failed: $(tail -n 1 <<< "$output")")
+            FAILED=true
+            return
+        fi
+    fi
+
+    elapsed=$(( $(date +%s) - start ))
+    if [ $rc -eq 3 ]; then
+        REPORT+=("⚠️ ${name}: snapshot ${snapshot} saved, but some files could not be read (journalctl -u backup.service), +${added:-?}, ${elapsed} s${extra}")
+        WARNED=true
+    else
+        REPORT+=("✅ ${name}: snapshot ${snapshot}, +${added:-?}, files ${files:-?}, ${elapsed} s${extra}")
+    fi
+}
+
+if [ "$USB_ENABLED" = true ]; then
+    if usb_mount; then
+        backup_to USB "$USB_REPOSITORY"
+        usb_umount
+    else
+        REPORT+=("❌ USB: ${USB_ERROR}")
+        FAILED=true
+    fi
+fi
+if [ "$S3_ENABLED" = true ]; then
+    backup_to S3 "$S3_REPOSITORY"
+fi
+
+if [ "$FAILED" = true ]; then
+    title="❌ BACKUP FAILED"
+elif [ "$WARNED" = true ]; then
+    title="⚠️ BACKUP COMPLETED WITH WARNINGS"
+else
+    title="✅ BACKUP OK"
+fi
+summary="${title}
+
+🖥️ Server: ${HOST}
+📁 Paths: ${PATHS[*]}
+
+$(printf '%s\n' "${REPORT[@]}")"
+echo "$summary"
+if ! /usr/local/sbin/notify-telegram "$summary"; then
+    echo "ERROR: Telegram notification not sent." >&2
+fi
+
+[ "$FAILED" = true ] && exit 1
+exit 0
+{% endraw %}
