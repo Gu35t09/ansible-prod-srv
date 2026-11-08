@@ -187,7 +187,7 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | --- | --- |
 | `deb.debian.org`, `security.debian.org` | apt, unattended-upgrades |
 | `download.docker.com` | Docker packages |
-| `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
+| `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `ghcr.io`, `pkg-containers.githubusercontent.com` | image pulls |
 | `database.clamav.net` | freshclam |
 | `api.telegram.org` | notifications |
 | `api.cloudflare.com`, `acme-v02.api.letsencrypt.org` | Traefik certificates (DNS challenge) |

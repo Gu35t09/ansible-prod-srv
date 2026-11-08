@@ -72,3 +72,7 @@ certificatesResolvers:
         propagation:
           # The authoritative name servers are not reachable (egress filtered).
           disableANSChecks: true
+          # The internal resolvers can answer before Cloudflare serves both
+          # TXT records (apex and wildcard share _acme-challenge.<domain>),
+          # so give Cloudflare time before Let's Encrypt checks.
+          delayBeforeChecks: 60s

@@ -31,13 +31,14 @@
     owner: root
     group: root
     mode: "0644"
-  register: docker_repo
 
 - name: Install Docker and the rootless prerequisites
   ansible.builtin.apt:
     name: "{{ docker_packages }}"
     state: present
-    update_cache: "{{ docker_repo is changed }}"
+    # Always: a run that added the repository but failed before this point
+    # would otherwise leave the cache without the Docker packages for good.
+    update_cache: true
 
 # The packages enable the rootful daemon: only the rootless one must run.
 - name: Stop and disable the rootful Docker daemon

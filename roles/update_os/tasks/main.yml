@@ -23,6 +23,13 @@
   ansible.builtin.package_facts:
     manager: apt
 
+# The base role installs needrestart too, but update-os can run on a host
+# where base never ran.
+- name: Install needrestart for the kernel check
+  ansible.builtin.apt:
+    name: needrestart
+    state: present
+
 # needrestart (batch mode, kernel only): NEEDRESTART-KSTA 1 = current kernel,
 # 2 = ABI-compatible upgrade pending, 3 = version upgrade pending.
 - name: Check whether a newer kernel is waiting
