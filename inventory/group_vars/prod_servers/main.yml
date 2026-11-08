@@ -5,17 +5,17 @@
 # ==============================================================================
 
 # --- System -------------------------------------------------------------------
-server_hostname: "prod-srv"
+server_hostname: "prod-srv-01"
 system_timezone: "Europe/Rome"
 # Egress is blocked on OPNsense: time comes from the firewall.
 ntp_servers:
-  - "10.0.10.1"
+  - "10.123.11.254"
 
 # --- Administrative user ------------------------------------------------------
 # Must match ansible_user in the inventory: it is the only user allowed over SSH
 # (AllowUsers) and in sudo. The playbook stops if this list is empty.
 # The list is exclusive: keys not listed here are removed from the server.
-admin_user: "mattia"
+admin_user: "v"
 admin_ssh_keys:
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAn6fwLJzRJjFsKK5LVGNTIxrYa9yCg10XO0rQL9JIuw mattia@nixos"
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOLPkoGZUGiYdOW2noZwBttL+WMKoP72KuE2bAm6eNMM mattia.vallortigara@newcomm.it"
@@ -25,10 +25,10 @@ admin_ssh_keys:
 mgmt_address: "{{ ansible_host }}"
 # Services address: Traefik and Technitium publish their ports only here.
 # Leave empty until the network role has created the services VLAN.
-services_address: ""
+services_address: "10.123.12.11"
 # Set to the management address to make sshd listen only there. The hardening
 # role refuses any value other than ansible_host.
-ssh_listen_address: ""
+ssh_listen_address: "10.123.11.11"
 
 # --- Network (applied only with --tags network) ------------------------------
 network_parent_interface: "enp1s0"
@@ -36,20 +36,20 @@ network_parent_interface: "enp1s0"
 # Each link gets its own routing table, so replies leave from the VLAN they
 # arrived on. Exactly one link must have default_route: true.
 network_links:
-  - name: management
-    vlan: null
-    address: "10.0.10.10/24"
-    gateway: "10.0.10.1"
+  - name: VLAN11-Server
+    vlan: 11
+    address: "10.123.11.11/24"
+    gateway: "10.123.11.254"
     table: 100
     default_route: true
-  - name: services
-    vlan: 20
-    address: "10.0.20.10/24"
-    gateway: "10.0.20.1"
+  - name: VLAN12-Apps
+    vlan: 12
+    address: "10.123.12.11/24"
+    gateway: "10.123.12.254"
     table: 200
     default_route: false
 network_dns_servers:
-  - "10.0.10.1"
+  - "10.123.11.254"
 
 # --- Notifications ------------------------------------------------------------
 telegram_bot_token: "{{ vault_telegram_bot_token }}"
@@ -69,8 +69,8 @@ traefik_networks: []
 backup_usb_label: "backup-usb"
 # Copy 2: S3 bucket. Allow the endpoint on OPNsense. Turn on object lock or
 # versioning on the bucket, so a compromised server cannot erase the history.
-backup_s3_endpoint: ""
-backup_s3_bucket: ""
+backup_s3_endpoint: "885965159e7b78dc7d102242522e9ba7.eu.r2.cloudflarestorage.com"
+backup_s3_bucket: "backups"
 restic_password: "{{ vault_restic_password | default('') }}"
 backup_s3_access_key: "{{ vault_backup_s3_access_key | default('') }}"
 backup_s3_secret_key: "{{ vault_backup_s3_secret_key | default('') }}"
