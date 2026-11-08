@@ -308,6 +308,36 @@ Then log in from a client and check a few entries. For a single lost entry, rest
 
 Failed logins are in `sudo grep -i 'username or password is incorrect' /srv/docker/app/vaultwarden/logs/vaultwarden.log`, with the client IP.
 
+### Restore Immich
+
+The library (`library/`) is restored as files. The database comes from the dump, `dump/immich.sql.gz`, into an empty Postgres: the live directory `postgres/` is not in the backup.
+
+```bash
+C="docker-svc compose -f /srv/docker/app/immich/compose.yml"; D=/srv/docker/app/immich
+$C down
+sudo backup usb restore latest --target /tmp/restore --include $D/library --include $D/dump
+sudo cp -a /tmp/restore$D/library/. $D/library/
+sudo rm -rf $D/postgres && sudo install -d -o svc-docker -g svc-docker -m 0700 $D/postgres
+$C create && docker-svc start immich_postgres && sleep 15
+sudo zcat /tmp/restore$D/dump/immich.sql.gz \
+  | sed "s/SELECT pg_catalog.set_config('search_path', '', false);/SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g" \
+  | docker-svc exec -i immich_postgres psql --dbname=postgres --username=postgres
+$C up -d
+sudo rm -rf /tmp/restore
+```
+
+The two errors "current user cannot be dropped" and "role "postgres" already exists" are expected. The `sed` is the one in Immich's restore guide. Then log in and open a few photos. The dump also restores the `postgres` user's password as it was when the dump was taken: if `vault_immich_db_password` changed since, the server cannot connect; set it again in Postgres (next section).
+
+### Change the Immich database password
+
+The password file is read by Postgres only when it creates the database, so change the database first, then the vault:
+
+```bash
+docker-svc exec -it immich_postgres psql -U postgres -c "ALTER USER postgres PASSWORD '<new password>';"
+```
+
+Then put the same value in `vault_immich_db_password` and run `--tags immich`: the server restarts with the new password.
+
 ### Replace the USB disk
 
 1. Format the new disk with the label (README, "First setup") and plug it in.

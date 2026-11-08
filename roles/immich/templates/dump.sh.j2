@@ -1,0 +1,22 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Dump of the Immich database, run by the backup before each run
+# (/etc/backup/pre.d). The data directory itself is left out of the backup:
+# copied while Postgres writes, it might not restore.
+set -euo pipefail
+
+DUMP={{ (immich_dir ~ '/dump') | quote }}
+NEW="$DUMP/immich.sql.gz.new"
+
+/usr/local/bin/docker-svc exec immich_postgres \
+    pg_dumpall --clean --if-exists --username=postgres | gzip > "$NEW"
+
+# A complete dump ends with this line; a truncated one does not.
+if ! gzip -t "$NEW" || ! zcat "$NEW" | tail -n 3 | grep -q 'PostgreSQL database cluster dump complete'; then
+    echo "immich: the dump is incomplete" >&2
+    rm -f "$NEW"
+    exit 1
+fi
+
+mv "$NEW" "$DUMP/immich.sql.gz"
+echo "immich: database dumped to $DUMP/immich.sql.gz"

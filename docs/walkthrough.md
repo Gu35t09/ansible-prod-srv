@@ -22,11 +22,12 @@ Contents:
 14. [Role: backup](#14-role-backup)
 15. [Role: traefik](#15-role-traefik)
 16. [Role: vaultwarden](#16-role-vaultwarden)
-17. [Role: update_os](#17-role-update_os)
-18. [The pre-commit hook](#18-the-pre-commit-hook)
-19. [Files the playbook creates on the server](#19-files-the-playbook-creates-on-the-server)
-20. [Known limits and points to review](#20-known-limits-and-points-to-review)
-21. [How it was tested](#21-how-it-was-tested)
+17. [Role: immich](#17-role-immich)
+18. [Role: update_os](#18-role-update_os)
+19. [The pre-commit hook](#19-the-pre-commit-hook)
+20. [Files the playbook creates on the server](#20-files-the-playbook-creates-on-the-server)
+21. [Known limits and points to review](#21-known-limits-and-points-to-review)
+22. [How it was tested](#22-how-it-was-tested)
 
 ---
 
@@ -719,6 +720,7 @@ For each name in `traefik_networks`, creates `proxy-<name>` with `--internal` if
 - **DNS challenge** through Cloudflare: nothing needs to be reachable from the Internet. With egress filtered, Traefik cannot ask Cloudflare's authoritative name servers whether the record has propagated, so it asks only the internal resolvers (`network_dns_servers`, Unbound) (`disableANSChecks`).
 - **Hardening**: read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped except binding ports, `no-new-privileges`. In rootless Docker, root inside the container is `svc-docker` on the host.
 - **Ports 80 and 443 on `services_address` only.** Port 80 only redirects to HTTPS.
+- **10-minute read timeout on `websecure`** (`respondingTimeouts.readTimeout` and `idleTimeout`, 600 s). Traefik's default, 60 s, cuts any request that takes longer to arrive: an Immich video uploaded over WireGuard would fail with error 499.
 - **For every router on `websecure`**: HSTS for a year, including subdomains, and `nosniff`. TLS 1.2 or later; `sniStrict` refuses names Traefik has no certificate for.
 - **Logs on disk**: `logs/traefik.log` and `logs/access.log` (one line per request, with the real client IP thanks to the slirp4netns port driver). The access log includes the dashboard (`addInternals`), so failed logins show up with the user name tried; it leaves out the health check (`observability.accessLogs: false` on the `ping` entry point) and the HTTP-to-HTTPS redirects. In the container log they would be lost whenever the container is recreated, at every update. `/etc/logrotate.d/traefik` rotates them daily with `copytruncate` and keeps `traefik_log_retention_days` (30) compressed files; being under `/srv`, they are also in the nightly backup. `docker-svc logs traefik` shows only what Traefik prints before it opens its log files.
 - **Dashboard** on `proxy.<domain>`, behind basic authentication with bcrypt hashes from the vault. It shows the routes and their errors, and changes nothing.
@@ -809,7 +811,56 @@ sudo /etc/backup/pre.d/vaultwarden && sudo ls -l /srv/docker/app/vaultwarden/dum
 
 ---
 
-## 17. Role: update_os
+## 17. Role: immich
+
+Purpose: the photo library. It sits in `/srv/docker/app/immich/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | Three containers: `immich_server`, `immich_postgres`, `immich_redis` (Valkey) |
+| `library/` | Mounted as `/data`: `upload/` (originals), `library/` (storage template), `profile/`, `thumbs/`, `encoded-video/`, `backups/` (Immich's own database dumps) |
+| `postgres/` | The live database (owned by Postgres's user, a subordinate UID on the host) |
+| `dump/immich.sql.gz` | `pg_dumpall` output, written before each backup |
+| `secrets/db-password` | The database password, mounted as a secret |
+
+**Check the Immich settings** / **Look up the Docker service user** / **Check that rootless Docker is configured** / **Check that Traefik is configured** / **Stop if Traefik is missing**
+Stops if `traefik_domain` is empty, if `immich` is not in `traefik_networks`, if the password is missing or contains anything but letters and digits (Immich's rule), or if Docker or Traefik are not set up yet.
+
+**Create the Immich directories** / **Look for the database directory** / **Create the database directory**
+The directories above. `postgres/` is created only when missing: the Postgres entrypoint gives it to its own user, and resetting the owner at every run would lock Postgres out.
+
+**Write the database password**
+`secrets/db-password` (0600, `svc-docker`), read by Postgres (`POSTGRES_PASSWORD_FILE`) and by the server (`DB_PASSWORD_FILE`). Postgres uses it only when it creates the database: a new password in the vault changes the file, not the database (see the maintenance guide).
+
+**Install the database dump script**
+`/etc/backup/pre.d/immich`, run by the backup before each run: `pg_dumpall --clean --if-exists` through `docker-svc exec`, compressed, then checked (`gzip -t` and the closing "dump complete" line) before it replaces the previous dump. `backup_exclude` leaves `postgres/` out of the backup: a copy taken while Postgres writes might not restore, and the dump has everything.
+
+**Write the compose file** / **Start Immich**
+`docker compose up --detach --remove-orphans --wait`. `--wait` waits for the health checks of the server (`immich-healthcheck`), Postgres and Valkey. With new images, the containers are recreated: that is all `--tags update-containers` does, so read the release notes first.
+
+**Write the Traefik route**
+`Host(photo.<domain>)` to `http://immich-server:2283`. Written after the containers are up.
+
+### Design choices
+
+- **No machine learning.** The `immich-machine-learning` container needs 1.5–3 GB of RAM and downloads its models from Hugging Face. Without it there is no face grouping and no smart search; search by file name, date, place and metadata still works. Machine learning must also be turned off in the admin settings, or every upload logs errors (README, "First setup"). It can be added later: a container on the backend network plus Hugging Face on the egress list.
+- **Two networks, no Internet.** `proxy-immich` holds Traefik and the server; `backend` (`internal: true`) holds the server, Postgres and Valkey. Traefik cannot reach the database, and nothing reaches the Internet. The server would use it only for the version check (turned off in the settings) and the clients load the map tiles themselves.
+- **Hardening**: the server runs with a read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped, `no-new-privileges`. Postgres and Valkey start as root to fix the owner of their data, then drop to their own user: they keep only `CHOWN`, `SETUID`, `SETGID` (and `DAC_OVERRIDE`, `FOWNER` for Postgres). Valkey holds only job queues, in a tmpfs.
+- **Images**: Postgres is Immich's own build with the vector extensions, pinned as in the release's `docker-compose.yml`. Major Postgres upgrades need a dump and restore: once Renovate is in place, they go in a separate group, applied by hand (project document).
+- **The whole library is backed up**, thumbnails and transcoded videos included: after a restore Immich has nothing to regenerate, at the cost of 10–20% more space on the USB disk and in S3.
+- **Logs** go to the container log only (lost when the container is recreated). Requests, with the client IP, are in Traefik's access log.
+
+Check:
+
+```bash
+docker-svc ps --filter name=immich --format '{{.Names}} {{.Status}}'    # three containers, healthy
+curl -s https://photo.greyroom.net/api/server/ping                         # from a client: {"res":"pong"}
+sudo /etc/backup/pre.d/immich && sudo ls -l /srv/docker/app/immich/dump/
+```
+
+---
+
+## 18. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -841,13 +892,13 @@ Container images are **not** updated here: they will follow the `update-containe
 
 ---
 
-## 18. The pre-commit hook
+## 19. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 19. Files the playbook creates on the server
+## 20. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -875,6 +926,9 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/srv/docker/app/vaultwarden/` | vaultwarden | Compose file, data, database dump, log |
 | `/srv/docker/system/traefik/dynamic/vaultwarden.yml` | vaultwarden | Traefik route |
 | `/etc/logrotate.d/vaultwarden`, `/etc/backup/pre.d/vaultwarden` | vaultwarden | Log rotation, database dump before the backup |
+| `/srv/docker/app/immich/` | immich | Compose file, library, database, dump, password |
+| `/srv/docker/system/traefik/dynamic/immich.yml` | immich | Traefik route |
+| `/etc/backup/pre.d/immich` | immich | Database dump before the backup |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -895,7 +949,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 20. Known limits and points to review
+## 21. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -920,11 +974,13 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **Vaultwarden sends no e-mail.** Without SMTP (egress is blocked) there is no reset by mail and no new-device notice: the master password must be on the emergency sheet, and the vault export is an open point in the project document.
 - **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
 - **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
+- **ClamAV and YARA scan the Immich library every night**, as the project document asks (user data in the volumes). With a large library the scans get long; YARA skips files over `yara_max_file_size_mb` (most videos). If the nightly scans run into the day, leave out `library/thumbs` and `library/encoded-video`, which Immich generates itself.
+- **Immich's database password is set once.** Changing `vault_immich_db_password` alone breaks the connection: change it in Postgres first (maintenance guide).
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 21. How it was tested
+## 22. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -939,6 +995,7 @@ On a Debian 13 VM (the official cloud image, switched to ifupdown to match a net
 | Rootless container on port 80 | The container sees the real client IP |
 | Vaultwarden 1.37.5 with the role's options (read-only, no capabilities, port 8080, internal network), in rootless Podman | Healthy; writes only to `data/` and `logs/`; no Internet access; `/admin` disabled; online SQLite backup of the live database passes `integrity_check` |
 | ansible-lint (production profile), yamllint, shellcheck | No findings |
+| Immich v3.3.6 with the role's options (server read-only with no capabilities; Postgres and Valkey with the reduced capabilities), in rootless Podman | Admin created, an image uploaded (original and thumbnails written); `pg_dumpall` dump restored into an empty Postgres with the asset present |
 
 The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested on a Debian 13 container with systemd and SSH (the lab VM was off):
 

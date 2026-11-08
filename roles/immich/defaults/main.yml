@@ -1,0 +1,20 @@
+---
+# Pinned by tag and digest: an update is a change in this file (Renovate),
+# applied with --tags update-containers. Read the Immich release notes first:
+# breaking changes are frequent. The database and Valkey images follow the
+# release's own docker-compose.yml.
+immich_server_image: "ghcr.io/immich-app/immich-server:v3.3.6@sha256:e1981983b1c13f6024b57d72e7ecae3342eed1581201ab09fb248932d86c593a"
+immich_postgres_image: "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
+immich_valkey_image: "docker.io/valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7"
+
+docker_user: "svc-docker"
+immich_dir: /srv/docker/app/immich
+# Traefik reads the route from this directory (written by the traefik role).
+immich_traefik_dynamic_dir: /srv/docker/system/traefik/dynamic
+
+immich_host: "photo.{{ traefik_domain }}"
+
+# Postgres password, from the vault. Letters and digits only (Immich's rule).
+immich_db_password: ""
+
+immich_timezone: "{{ system_timezone | default('Etc/UTC') }}"
