@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Written by the vaultwarden role. The certificate and the security headers
+# come from the websecure entry point.
+http:
+  routers:
+    vaultwarden:
+      rule: "Host(`{{ vaultwarden_host }}`)"
+      entryPoints:
+        - websecure
+      service: vaultwarden
+
+  services:
+    vaultwarden:
+      loadBalancer:
+        servers:
+          - url: "http://vaultwarden:8080"

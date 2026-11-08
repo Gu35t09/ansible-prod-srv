@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). The applications (Traefik, Vaultwarden, Immich, OpenCloud, Paperless, Technitium) and Renovate come next, each as its own role.
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik and Vaultwarden are in place; Immich, OpenCloud, Paperless and Renovate come next, each as its own role. DNS stays on Unbound (OPNsense).
 
 ## Layout
 
@@ -24,6 +24,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── firewall_host/                # nftables, inbound deny by default
 │   ├── docker_rootless/              # Docker for a dedicated service user
 │   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
+│   ├── vaultwarden/                  # password manager, SQLite (tags: vaultwarden, update-containers)
 │   ├── notify/                       # Telegram helper shared by the other roles
 │   ├── clamav/                       # daemon, scheduled scan, quarantine
 │   ├── monitoring/                   # SMART and disk space alerts
@@ -42,9 +43,10 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. |
 | `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t` (`LogLevel VERBOSE`, so every login and its key are logged), kernel and network sysctl hardening. |
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
-| `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 53/80/443 only to the services address; forwarding off; outbound left to OPNsense. |
+| `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 80/443 only to the services address; forwarding off; outbound left to OPNsense. |
 | `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
 | `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
+| `vaultwarden` | Vaultwarden in `/srv/docker/app/vaultwarden` with SQLite, image pinned by tag and digest, on `vault.<domain>`. Only on its internal network with Traefik: no published ports, no Internet access (so no favicon downloads). Sign-ups off, admin page disabled, password hints off. Read-only container with no capabilities. A dump script for the backup copies the database with SQLite's online backup and checks it. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
@@ -58,7 +60,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,traefik,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,traefik,vaultwarden,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
@@ -97,8 +99,16 @@ For Traefik you need, before the first run:
   ```bash
   podman run --rm docker.io/library/httpd:2.4 htpasswd -nbB admin '<password>'
   ```
-- **Internal DNS names** pointing to the services address (`proxy.greyroom.net` for the dashboard, then one per service), as host overrides in Unbound on OPNsense until Technitium is in place.
+- **Internal DNS names** pointing to the services address (`proxy.greyroom.net` for the dashboard, then one per service), as host overrides in Unbound on OPNsense.
 - `api.cloudflare.com` and `acme-v02.api.letsencrypt.org` allowed on OPNsense.
+
+For Vaultwarden you need `vaultwarden` in `traefik_networks` (run `--tags traefik` once after adding it) and a host override `vault.greyroom.net` → services address in Unbound. No secret: the admin page stays disabled. To create the first account:
+
+1. Set `vaultwarden_signups_allowed: true` in `main.yml` and run `--tags vaultwarden`.
+2. Register at `https://vault.greyroom.net` (through WireGuard or from the LAN).
+3. Set it back to `false` and run `--tags vaultwarden` again. Family members can then be invited from an organization in the web vault: invited addresses can register even with sign-ups off.
+
+Vaultwarden sends no e-mail (no SMTP, egress is blocked): there is no password reset by mail, so the master password must be on the emergency sheet.
 
 For the backup you need, before the first run:
 
@@ -153,6 +163,7 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
 | `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |
 | `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
+| `vaultwarden_signups_allowed` | `false` | Turn on only to create an account (see "First setup"). |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
 | `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
@@ -164,7 +175,7 @@ Every container service has its own directory, with its compose file, its data a
 
 ```text
 /srv/docker/
-├── system/        # infrastructure: traefik, technitium, renovate
+├── system/        # infrastructure: traefik, renovate
 │   └── <name>/
 └── app/           # applications: vaultwarden, immich, opencloud, paperless
     └── <name>/
