@@ -188,3 +188,47 @@ echo | openssl s_client -connect proxy.greyroom.net:443 -servername proxy.greyro
 ```
 
 Expected: issuer Let's Encrypt and `DNS:greyroom.net, DNS:*.greyroom.net`. A second `--tags traefik` run reports `changed=0`.
+
+## 15. Vaultwarden
+
+On the server:
+
+```bash
+docker-svc ps --filter name=vaultwarden --format '{{.Names}} {{.Status}}'      # Up ... (healthy)
+docker-svc inspect vaultwarden --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'   # proxy-vaultwarden only
+docker-svc network inspect proxy-vaultwarden --format '{{range .Containers}}{{.Name}} {{end}}'          # traefik and vaultwarden, nothing else
+docker-svc port vaultwarden                                                     # nothing: no published ports
+docker-svc inspect vaultwarden --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}}'      # true [ALL]
+docker-svc inspect vaultwarden --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(DOMAIN|ROCKET_PORT|SIGNUPS_ALLOWED|PASSWORD_HINTS_ALLOWED|DISABLE_ICON_DOWNLOAD|ADMIN_TOKEN)='
+docker-svc exec vaultwarden curl -s -m 5 -o /dev/null https://github.com; echo "exit code $?"           # not 0: no Internet access
+sudo tail -n 5 /srv/docker/app/vaultwarden/logs/vaultwarden.log                # "Rocket has launched from http://0.0.0.0:8080", no errors
+sudo cat /srv/docker/system/traefik/dynamic/vaultwarden.yml                    # the route to http://vaultwarden:8080
+```
+
+Expected environment: `DOMAIN=https://vault.greyroom.net`, `ROCKET_PORT=8080`, `SIGNUPS_ALLOWED=false` (except while creating an account), `PASSWORD_HINTS_ALLOWED=false`, `DISABLE_ICON_DOWNLOAD=true`, and no `ADMIN_TOKEN` line.
+
+Dump and backup:
+
+```bash
+sudo /etc/backup/pre.d/vaultwarden                     # "database dumped to .../dump/db.sqlite3": only after integrity_check returned ok
+sudo ls -l /srv/docker/app/vaultwarden/dump/           # db.sqlite3, owned by svc-docker
+sudo systemctl start backup.service
+journalctl -u backup.service -n 15 -o cat              # "✅ Pre-backup scripts: OK" and ✅ BACKUP OK
+sudo backup usb ls latest /srv/docker/app/vaultwarden/dump    # the dump is in the snapshot
+```
+
+From a client that resolves `vault.greyroom.net` to the services address:
+
+```bash
+curl -s https://vault.greyroom.net/alive; echo                                     # a date
+curl -sI https://vault.greyroom.net/ | grep -i strict-transport                    # HSTS
+curl -s https://vault.greyroom.net/admin | grep -o "disabled, please configure the 'ADMIN_TOKEN'"   # admin page disabled
+echo | openssl s_client -connect vault.greyroom.net:443 -servername vault.greyroom.net 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName   # the wildcard
+```
+
+By hand, in the web vault or an app:
+
+- **Sign-ups off**: with `vaultwarden_signups_allowed: false`, creating an account with a new address fails with "Registration not allowed or user already exists".
+- **Real client IP**: log in once with a wrong master password, then `sudo grep -i incorrect /srv/docker/app/vaultwarden/logs/vaultwarden.log | tail -1` shows the client's address, not a `10.0.2.x` or container address.
+
+A second `--tags vaultwarden` run reports `changed=0`.
