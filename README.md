@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik and Vaultwarden are in place; Immich, OpenCloud, Paperless and Renovate come next, each as its own role. DNS stays on Unbound (OPNsense).
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden and Immich are in place; OpenCloud, Paperless and Renovate come next, each as its own role. DNS stays on Unbound (OPNsense).
 
 ## Layout
 
@@ -25,6 +25,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── docker_rootless/              # Docker for a dedicated service user
 │   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
 │   ├── vaultwarden/                  # password manager, SQLite (tags: vaultwarden, update-containers)
+│   ├── immich/                       # photos, without machine learning (tags: immich, update-containers)
 │   ├── notify/                       # Telegram helper shared by the other roles
 │   ├── clamav/                       # daemon, scheduled scan, quarantine
 │   ├── monitoring/                   # SMART and disk space alerts
@@ -47,6 +48,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
 | `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
 | `vaultwarden` | Vaultwarden in `/srv/docker/app/vaultwarden` with SQLite, image pinned by tag and digest, on `vault.<domain>`. Only on its internal network with Traefik: no published ports, no Internet access (so no favicon downloads). Sign-ups off, admin page disabled, password hints off. Read-only container with no capabilities. A dump script for the backup copies the database with SQLite's online backup and checks it. |
+| `immich` | Immich in `/srv/docker/app/immich` on `photo.<domain>`: server, Postgres and Valkey, images pinned by tag and digest; **no machine learning** container. Only the server is on Traefik's network; the database and Valkey share an internal network with it. No container has Internet access. Read-only server with no capabilities; Postgres and Valkey keep only what their entrypoints need. A dump script for the backup runs `pg_dumpall` and checks the result; the live database directory is left out of the backup. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
@@ -60,7 +62,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,traefik,vaultwarden,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
@@ -109,6 +111,12 @@ For Vaultwarden you need `vaultwarden` in `traefik_networks` (run `--tags traefi
 3. Set it back to `false` and run `--tags vaultwarden` again. Family members can then be invited from an organization in the web vault: invited addresses can register even with sign-ups off.
 
 Vaultwarden sends no e-mail (no SMTP, egress is blocked): there is no password reset by mail, so the master password must be on the emergency sheet.
+
+For Immich you need `immich` in `traefik_networks` (run `--tags traefik` once after adding it), a host override `photo.greyroom.net` → services address in Unbound, and `vault_immich_db_password` in the vault (letters and digits only: `openssl rand -hex 24`). After the first run:
+
+1. Open `https://photo.greyroom.net` and create the admin account (the first account becomes admin).
+2. *Administration → Settings → Machine Learning Settings*: turn off **Enable machine learning**. There is no machine learning container, so otherwise every upload logs errors.
+3. *Administration → Settings → Version Check*: turn it off (the server has no Internet access; Renovate reports new versions).
 
 For the backup you need, before the first run:
 
@@ -163,6 +171,8 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
 | `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |
 | `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
+| `immich_db_password` | — | From the vault (`vault_immich_db_password`). Used only when the database is created: changing it later does not change the database password. |
+| `backup_exclude` | `/srv/docker/app/immich/postgres` (in `main.yml`) | Live database directories: their dump scripts save them instead. |
 | `vaultwarden_signups_allowed` | `false` | Turn on only to create an account (see "First setup"). |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |

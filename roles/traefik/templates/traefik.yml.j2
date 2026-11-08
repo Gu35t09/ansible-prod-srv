@@ -32,6 +32,12 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    # The default 60 s cuts uploads that take longer (Immich videos over
+    # WireGuard): a request may take up to 10 minutes to arrive.
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s
+        idleTimeout: 600s
     http:
       middlewares:
         - secure-headers@file

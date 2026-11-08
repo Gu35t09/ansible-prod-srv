@@ -1,0 +1,99 @@
+# {{ ansible_managed }}
+# Based on the docker-compose.yml of the Immich release, without the machine
+# learning container and with no published ports.
+name: immich
+
+services:
+  immich-server:
+    image: {{ immich_server_image }}
+    container_name: immich_server
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      TZ: "{{ immich_timezone }}"
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_DATABASE_NAME: immich
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      REDIS_HOSTNAME: redis
+    secrets:
+      - db_password
+    volumes:
+      - ./library:/data
+    tmpfs:
+      - /tmp
+    # proxy-immich: Traefik only. backend: the database and Valkey.
+    networks:
+      - proxy-immich
+      - backend
+    depends_on:
+      - redis
+      - database
+
+  redis:
+    image: {{ immich_valkey_image }}
+    container_name: immich_redis
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint gives /data to the valkey user, then drops root.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    # Job queues only: they are rebuilt after a restart.
+    tmpfs:
+      - /data
+    networks:
+      - backend
+    healthcheck:
+      test: redis-cli ping | grep -q PONG || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  database:
+    image: {{ immich_postgres_image }}
+    container_name: immich_postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint fixes the data directory's owner, then drops root.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    secrets:
+      - db_password
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    networks:
+      - backend
+
+networks:
+  proxy-immich:
+    external: true
+  # No route to the Internet; Traefik is not on it.
+  backend:
+    internal: true
+
+secrets:
+  db_password:
+    file: ./secrets/db-password

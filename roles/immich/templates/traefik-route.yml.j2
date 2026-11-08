@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Written by the immich role. The certificate and the security headers come
+# from the websecure entry point; so does the 10-minute read timeout that
+# long video uploads need.
+http:
+  routers:
+    immich:
+      rule: "Host(`{{ immich_host }}`)"
+      entryPoints:
+        - websecure
+      service: immich
+
+  services:
+    immich:
+      loadBalancer:
+        servers:
+          - url: "http://immich-server:2283"

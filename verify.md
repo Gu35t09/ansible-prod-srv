@@ -232,3 +232,45 @@ By hand, in the web vault or an app:
 - **Real client IP**: log in once with a wrong master password, then `sudo grep -i incorrect /srv/docker/app/vaultwarden/logs/vaultwarden.log | tail -1` shows the client's address, not a `10.0.2.x` or container address.
 
 A second `--tags vaultwarden` run reports `changed=0`.
+
+## 16. Immich
+
+On the server:
+
+```bash
+docker-svc ps --filter name=immich --format '{{.Names}} {{.Status}}'     # immich_server, immich_postgres, immich_redis: Up ... (healthy)
+docker-svc inspect immich_server --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'     # immich_backend proxy-immich
+docker-svc inspect immich_postgres --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'   # immich_backend only
+docker-svc network inspect proxy-immich --format '{{range .Containers}}{{.Name}} {{end}}'                   # traefik and immich_server, nothing else
+docker-svc inspect immich_server --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}}'         # true [ALL]
+docker-svc port immich_server                                                    # nothing: no published ports
+docker-svc exec immich_server curl -s -m 5 -o /dev/null https://github.com; echo "exit code $?"   # not 0: no Internet access
+docker-svc logs --since 10m immich_server 2>&1 | grep -E 'ERROR|Machine learning'                 # nothing, once machine learning is off in the settings
+sudo cat /srv/docker/system/traefik/dynamic/immich.yml                           # the route to http://immich-server:2283
+```
+
+Dump and backup:
+
+```bash
+sudo /etc/backup/pre.d/immich                        # "database dumped to .../dump/immich.sql.gz"
+sudo ls -l /srv/docker/app/immich/dump/
+sudo systemctl start backup.service
+journalctl -u backup.service -n 15 -o cat            # "✅ Pre-backup scripts: OK" and ✅ BACKUP OK
+sudo backup usb ls latest /srv/docker/app/immich/dump        # the dump is in the snapshot
+sudo backup usb ls latest /srv/docker/app/immich | grep -c 'immich/postgres$'   # 0: the live database is left out
+```
+
+From a client that resolves `photo.greyroom.net` to the services address:
+
+```bash
+curl -s https://photo.greyroom.net/api/server/ping; echo           # {"res":"pong"}
+curl -s https://photo.greyroom.net/api/server/version; echo        # {"major":3,"minor":3,"patch":6}
+curl -sI https://photo.greyroom.net/ | grep -i strict-transport    # HSTS
+```
+
+By hand, in the web app or the mobile app:
+
+- **Upload**: upload a photo and a video longer than one minute from the mobile app over WireGuard. Both appear with a thumbnail; the video plays. A failure after about 60 seconds (error 499 in `access.log`) means the Traefik read timeout is not applied: run `--tags traefik`.
+- **No machine learning**: *Administration → Settings → Machine Learning Settings* shows it turned off, and *Administration → Jobs* has no face detection or smart search running.
+
+A second `--tags immich` run reports `changed=0`.

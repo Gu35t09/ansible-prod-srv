@@ -1,0 +1,120 @@
+---
+# Immich without machine learning. The server joins proxy-immich (Traefik)
+# and an internal backend network with Postgres and Valkey: no container has
+# a route to the Internet, and only the server is reachable from Traefik.
+
+- name: Check the Immich settings
+  ansible.builtin.assert:
+    that:
+      - traefik_domain | default('') | length > 0
+      - "'immich' in traefik_networks | default([])"
+      - immich_db_password is match('^[A-Za-z0-9]{20,}$')
+    fail_msg: >-
+      Set traefik_domain, add immich to traefik_networks in main.yml and run
+      --tags traefik before this role (it creates proxy-immich), and set
+      vault_immich_db_password: at least 20 letters and digits.
+    quiet: true
+
+- name: Look up the Docker service user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ docker_user }}"
+    fail_key: false
+
+- name: Check that rootless Docker is configured
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_passwd'][docker_user] is not none
+    fail_msg: "{{ docker_user }} does not exist: run the playbook with --tags docker first."
+    quiet: true
+
+- name: Check that Traefik is configured
+  ansible.builtin.stat:
+    path: "{{ immich_traefik_dynamic_dir }}"
+  register: immich_traefik_dir
+
+- name: Stop if Traefik is missing
+  ansible.builtin.assert:
+    that:
+      - immich_traefik_dir.stat.isdir | default(false)
+    fail_msg: "{{ immich_traefik_dynamic_dir }} does not exist: run the playbook with --tags traefik first."
+    quiet: true
+
+- name: Create the Immich directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ docker_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ immich_dir }}", owner: root, mode: "0750" }
+    # Originals, thumbnails, transcoded videos (UPLOAD_LOCATION).
+    - { path: "{{ immich_dir }}/library", owner: "{{ docker_user }}", mode: "0750" }
+    - { path: "{{ immich_dir }}/secrets", owner: "{{ docker_user }}", mode: "0700" }
+    - { path: "{{ immich_dir }}/dump", owner: "{{ docker_user }}", mode: "0700" }
+
+# Postgres changes the owner of its data directory to its own user (a
+# subordinate UID on the host): created once, never touched again here.
+- name: Look for the database directory
+  ansible.builtin.stat:
+    path: "{{ immich_dir }}/postgres"
+  register: immich_postgres_dir
+
+- name: Create the database directory
+  ansible.builtin.file:
+    path: "{{ immich_dir }}/postgres"
+    state: directory
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0700"
+  when: not immich_postgres_dir.stat.exists
+
+# Used by Postgres only when it creates the database: changing it later
+# changes the file, not the database password.
+- name: Write the database password
+  ansible.builtin.copy:
+    dest: "{{ immich_dir }}/secrets/db-password"
+    content: "{{ immich_db_password }}"
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0600"
+  no_log: true
+
+# Run by the backup before each run (run-parts: no dot in the name).
+- name: Install the database dump script
+  ansible.builtin.template:
+    src: dump.sh.j2
+    dest: /etc/backup/pre.d/immich
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Write the compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ immich_dir }}/compose.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
+
+- name: Start Immich
+  ansible.builtin.command:
+    cmd: docker compose --file {{ immich_dir }}/compose.yml up --detach --remove-orphans --wait
+    chdir: "{{ immich_dir }}"
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  register: immich_up
+  changed_when: immich_up.stderr is search('Creat|Recreat|Start')
+
+# After the containers are up, so Traefik never routes to a missing service.
+- name: Write the Traefik route
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ immich_traefik_dynamic_dir }}/immich.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
