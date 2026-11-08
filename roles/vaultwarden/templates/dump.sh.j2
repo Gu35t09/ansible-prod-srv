@@ -1,0 +1,27 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Consistent copy of the Vaultwarden database, run by the backup before each
+# run (/etc/backup/pre.d). SQLite's online backup works while Vaultwarden is
+# writing; copying db.sqlite3 itself might not restore.
+set -eu
+
+DATA={{ (vaultwarden_dir ~ '/data') | quote }}
+DUMP={{ (vaultwarden_dir ~ '/dump') | quote }}
+
+if [ ! -f "$DATA/db.sqlite3" ]; then
+    echo "vaultwarden: no database yet, nothing to dump."
+    exit 0
+fi
+
+# As the service user: the files belong to it, and the dump does too.
+runuser -u {{ docker_user | quote }} -- sqlite3 "$DATA/db.sqlite3" ".backup '$DUMP/db.sqlite3.new'"
+
+check=$(runuser -u {{ docker_user | quote }} -- sqlite3 "$DUMP/db.sqlite3.new" 'PRAGMA integrity_check;')
+if [ "$check" != "ok" ]; then
+    echo "vaultwarden: the dump failed the integrity check: $check" >&2
+    rm -f "$DUMP/db.sqlite3.new"
+    exit 1
+fi
+
+mv "$DUMP/db.sqlite3.new" "$DUMP/db.sqlite3"
+echo "vaultwarden: database dumped to $DUMP/db.sqlite3"

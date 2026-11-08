@@ -1,0 +1,19 @@
+---
+# Pinned by tag and digest: an update is a change in this file (Renovate),
+# applied with --tags update-containers.
+vaultwarden_image: "docker.io/vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f"
+
+docker_user: "svc-docker"
+vaultwarden_dir: /srv/docker/app/vaultwarden
+# Traefik reads the route from this directory (written by the traefik role).
+vaultwarden_traefik_dynamic_dir: /srv/docker/system/traefik/dynamic
+
+vaultwarden_host: "vault.{{ traefik_domain }}"
+
+# New accounts. Turn it on only to create an account, then off again (see
+# the README, "Vaultwarden"). Invited members of an organization can always
+# register.
+vaultwarden_signups_allowed: false
+
+# logs/vaultwarden.log, rotated daily by logrotate; kept this many days.
+vaultwarden_log_retention_days: 30

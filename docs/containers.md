@@ -23,7 +23,7 @@ Contents:
 
   ```text
   /srv/docker/
-  ├── system/<name>/   # infrastructure: traefik, technitium, renovate
+  ├── system/<name>/   # infrastructure: traefik, renovate
   └── app/<name>/      # applications: vaultwarden, immich, opencloud, paperless
       ├── compose.yml  # written by Ansible
       ├── data/        # the service's data (bind mounts)

@@ -289,6 +289,25 @@ sudo rm -rf /tmp/restore
 
 To put data back in place, stop the application first, restore into a temporary directory, then move the files (or restore with `--target /`, which overwrites the current files). A snapshot from a specific day: take its ID from `snapshots` instead of `latest`.
 
+### Restore Vaultwarden
+
+The database to restore is the dump, `dump/db.sqlite3`, not `data/db.sqlite3` (a live file, possibly inconsistent in the snapshot). `data/rsa_key.pem` must come from the same snapshot: without it every client has to log in again, but no data is lost.
+
+```bash
+docker-svc compose -f /srv/docker/app/vaultwarden/compose.yml stop
+sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/vaultwarden
+R=/tmp/restore/srv/docker/app/vaultwarden; D=/srv/docker/app/vaultwarden
+sudo cp -a $R/data/. $D/data/                                     # key, attachments, sends
+sudo rm -f $D/data/db.sqlite3-wal $D/data/db.sqlite3-shm
+sudo install -o svc-docker -g svc-docker -m 0600 $R/dump/db.sqlite3 $D/data/db.sqlite3   # then the dump over the live copy
+docker-svc compose -f /srv/docker/app/vaultwarden/compose.yml start
+sudo rm -rf /tmp/restore
+```
+
+Then log in from a client and check a few entries. For a single lost entry, restoring the server is overkill: use the client's history or an export.
+
+Failed logins are in `sudo grep -i 'username or password is incorrect' /srv/docker/app/vaultwarden/logs/vaultwarden.log`, with the client IP.
+
 ### Replace the USB disk
 
 1. Format the new disk with the label (README, "First setup") and plug it in.
@@ -384,7 +403,7 @@ loginctl show-user svc-docker | grep Linger        # must be Linger=yes
 Common causes:
 
 - **Linger lost**: `sudo loginctl enable-linger svc-docker`, or run the playbook with `--tags docker`.
-- **Port already in use** (53, 80, 443): `sudo ss -ltnup | grep -E ':(53|80|443) '`.
+- **Port already in use** (80, 443): `sudo ss -ltnp | grep -E ':(80|443) '`.
 - **Upgrade of rootless-extras or slirp4netns**: run `--tags docker`, which rewrites the unit and restarts the daemon.
 - **Disk full**: see [DISK SPACE LOW](#disk-space-low).
 

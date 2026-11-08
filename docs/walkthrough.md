@@ -21,11 +21,12 @@ Contents:
 13. [Role: yara](#13-role-yara)
 14. [Role: backup](#14-role-backup)
 15. [Role: traefik](#15-role-traefik)
-16. [Role: update_os](#16-role-update_os)
-17. [The pre-commit hook](#17-the-pre-commit-hook)
-18. [Files the playbook creates on the server](#18-files-the-playbook-creates-on-the-server)
-19. [Known limits and points to review](#19-known-limits-and-points-to-review)
-20. [How it was tested](#20-how-it-was-tested)
+16. [Role: vaultwarden](#16-role-vaultwarden)
+17. [Role: update_os](#17-role-update_os)
+18. [The pre-commit hook](#18-the-pre-commit-hook)
+19. [Files the playbook creates on the server](#19-files-the-playbook-creates-on-the-server)
+20. [Known limits and points to review](#20-known-limits-and-points-to-review)
+21. [How it was tested](#21-how-it-was-tested)
 
 ---
 
@@ -171,7 +172,7 @@ prod-srv ansible_host=10.0.10.10 ansible_user=mattia
 | `ntp_servers` | base | NTP servers. OPNsense, because egress to the Internet is blocked. |
 | `admin_user`, `admin_ssh_keys` | hardening | Admin user and its public keys. The list is **exclusive**: any key on the server that is not listed here gets removed. |
 | `mgmt_address` | firewall_host | Address where SSH is accepted. Defaults to `ansible_host`. |
-| `services_address` | firewall_host | Address where 53/80/443 are accepted. Empty means any address. |
+| `services_address` | firewall_host | Address where 80/443 are accepted. Empty means any address. |
 | `ssh_listen_address` | hardening | Address sshd binds to. Empty means all addresses. |
 | `network_parent_interface`, `network_links`, `network_dns_servers` | network | Physical NIC, one entry per VLAN, DNS resolvers. |
 | `telegram_bot_token`, `telegram_chat_id` | notify | Read from `vault_telegram_*` in the vault. |
@@ -385,7 +386,7 @@ The template becomes `/etc/nftables.conf` (root only, 0600). `validate: nft -c -
 3. `iif "lo" accept`: local traffic.
 4. ICMP and ICMPv6: needed for path MTU discovery and, on IPv6, for neighbour discovery.
 5. SSH: `ip daddr <mgmt_address> tcp dport 22`. If `firewall_ssh_allowed_sources` is not empty, it also checks the source against the `ssh_sources` set.
-6. Service ports (`firewall_service_ports`): TCP 53/80/443 and UDP 53, on `services_address` if set, otherwise on any address.
+6. Service ports (`firewall_service_ports`): TCP 80/443, on `services_address` if set, otherwise on any address.
 7. If `firewall_log_drops` is on: logs what is about to be dropped (at most 10 per minute) with the prefix `nft-input-drop:`.
 
 **`forward` chain, `policy drop`**: the server does not route between networks.
@@ -426,8 +427,8 @@ Writes `/etc/apt/sources.list.d/docker.sources` in the deb822 format. `Signed-By
 **Stop and disable the rootful Docker daemon** / **Remove the rootful Docker socket**
 The package starts the system-wide daemon as root. It is stopped and disabled, and its socket is removed. Only the rootless daemon remains.
 
-**Let unprivileged processes bind ports from 53**
-`net.ipv4.ip_unprivileged_port_start=53`. By default only root can bind ports below 1024; this lets `svc-docker` publish 53, 80 and 443. Side effect: any local user can bind those ports. That is acceptable here because only the admin and the service user exist.
+**Let unprivileged processes bind ports from 80**
+`net.ipv4.ip_unprivileged_port_start=80`. By default only root can bind ports below 1024; this lets `svc-docker` publish 80 and 443 (Traefik). Side effect: any local user can bind those ports. That is acceptable here because only the admin and the service user exist.
 
 ### Service user
 
@@ -455,7 +456,7 @@ Waits for `/run/user/<uid>/bus`, a sign that the user's systemd instance is read
 `docker.service.j2` → `~/.config/systemd/user/docker.service`. It is the same unit that `dockerd-rootless-setuptool.sh` would generate, written declaratively so that Ansible can keep it under control. Key lines:
 
 - `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns`: the daemon's network.
-- `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`: how ports are published. The default `builtin` driver is faster but replaces the client's IP with an internal one; `slirp4netns` keeps it. Traefik (logs, rate limits) and Technitium (per-client rules) need the real IP.
+- `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`: how ports are published. The default `builtin` driver is faster but replaces the client's IP with an internal one; `slirp4netns` keeps it. Traefik needs the real IP for its access log and passes it on to the services (`X-Real-Ip`), so Vaultwarden logs failed logins with the client's address.
 - `DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=--cidr=...`: only if `docker_rootlesskit_cidr` is set. rootlesskit uses `10.0.2.0/24` internally: if a network the server talks to uses the same range, replies to those clients stay inside the namespace and never leave. This was found during testing (the test VM used that same range).
 - `Delegate=yes`: lets the daemon manage its containers' cgroups.
 - `Restart=always`: restarts the daemon if it crashes.
@@ -467,7 +468,7 @@ Waits for `/run/user/<uid>/bus`, a sign that the user's systemd instance is read
 `/usr/local/bin/docker-svc` runs `docker` as `svc-docker` with the right socket. The admin has no direct access to the socket; the wrapper goes through sudo, so every use is recorded in the journal.
 
 **Create the container directories**
-`/srv/docker`, `/srv/docker/system` (infrastructure: Traefik, Technitium, Renovate) and `/srv/docker/app` (applications: Vaultwarden, Immich, OpenCloud, Paperless), owned by root with group `svc-docker`, mode 0750: the service user can reach them, other users cannot. Each service role adds `<name>/` with its compose file, data and database dumps, so one directory holds everything a restore needs.
+`/srv/docker`, `/srv/docker/system` (infrastructure: Traefik, Renovate) and `/srv/docker/app` (applications: Vaultwarden, Immich, OpenCloud, Paperless), owned by root with group `svc-docker`, mode 0750: the service user can reach them, other users cannot. Each service role adds `<name>/` with its compose file, data and database dumps, so one directory holds everything a restore needs.
 
 **Apply pending daemon changes before the check** (`meta: flush_handlers`)
 Runs the **Restart rootless Docker** handler now if `daemon.json` or the unit changed, so the next check sees the new configuration.
@@ -614,7 +615,7 @@ They are vendored in `roles/yara/files/rules/` and copied to `/etc/yara/rules/`:
 | `eset/` | [eset/malware-ioc](https://github.com/eset/malware-ioc) | Ebury (`libkeyutils` with a constructor, the v1.7/1.8 string decryption), the OpenSSH backdoors of "The Dark Side of the ForSSHe" | BSD 2-Clause |
 | `elastic/` | [elastic/protections-artifacts](https://github.com/elastic/protections-artifacts) | Every `Linux_*` and `Multi_*` rule: Ebury, SSHDoor, sshd kits, rootkits (Diamorphine, Reptile, Perfctl, …), miners (XMRig and others), Docker botnets (Kinsing, Tsunami, Mirai), C2 implants (Sliver, Merlin, Mythic), tunnels (gsocket), webshells, ransomware, privilege-escalation exploits, EICAR | Elastic License 2.0 |
 
-Only Elastic's attack-simulation rule is left out (it is not malware). Before adding them, the rules were run against a clean Debian 13 system and against unpacked images of Traefik, Vaultwarden, Immich, Paperless-ngx, Technitium and OpenCloud: no matches in about 125,000 files.
+Only Elastic's attack-simulation rule is left out (it is not malware). Before adding them, the rules were run against a clean Debian 13 system and against unpacked images of Traefik, Vaultwarden, Immich, Paperless-ngx and OpenCloud: no matches in about 125,000 files.
 
 **Install YARA** / **Create the rule and log directories** / **Copy the YARA rules**
 The Debian `yara` package (4.5 on Debian 13), `/etc/yara/rules/` and `/var/log/yara/`.
@@ -757,7 +758,58 @@ Check: `sudo tail /srv/docker/system/traefik/logs/traefik.log`, the dashboard, a
 
 ---
 
-## 16. Role: update_os
+## 16. Role: vaultwarden
+
+Purpose: the password manager, the most critical service on the server. It sits in `/srv/docker/app/vaultwarden/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | The container |
+| `data/` | `db.sqlite3` (the vaults), `rsa_key.pem` (signs the login tokens), attachments, sends |
+| `dump/db.sqlite3` | Consistent copy of the database, written before each backup |
+| `logs/vaultwarden.log` | Logins, failed logins with the client IP, errors |
+
+`data/` and `dump/` (0700) and `logs/` (0750) belong to `svc-docker`; `compose.yml` to root with group `svc-docker`. The route is in `/srv/docker/system/traefik/dynamic/vaultwarden.yml`.
+
+**Check the Vaultwarden settings** / **Look up the Docker service user** / **Check that rootless Docker is configured** / **Check that Traefik is configured** / **Stop if Traefik is missing**
+Stops if `traefik_domain` is empty, if `vaultwarden` is not in `traefik_networks` (so `proxy-vaultwarden` would not exist), or if Docker or Traefik are not set up yet.
+
+**Install sqlite3**
+On the host, for the dump script: the image has no `sqlite3`.
+
+**Create the Vaultwarden directories** / **Rotate the Vaultwarden log**
+The directories above, and `/etc/logrotate.d/vaultwarden`: daily, `copytruncate`, `vaultwarden_log_retention_days` (30) compressed files.
+
+**Install the database dump script**
+`/etc/backup/pre.d/vaultwarden`, run by the backup before each run. As `svc-docker` it runs SQLite's online backup (`.backup`) into `dump/db.sqlite3.new`, checks it with `PRAGMA integrity_check`, and only then replaces `dump/db.sqlite3`. The online backup is consistent while Vaultwarden is writing; a plain copy of `db.sqlite3` and its `-wal` file might not be. If the check fails, the old dump stays and the backup report shows a warning.
+
+**Write the compose file** / **Start Vaultwarden**
+`docker compose up --detach --remove-orphans --wait` as `svc-docker`. `--wait` waits for the image's health check (`/healthcheck.sh`, which calls `/alive`). With a new `vaultwarden_image`, the container is recreated: that is all `--tags update-containers` does. Settings are environment variables, so a change to one recreates the container too.
+
+**Write the Traefik route**
+`Host(vault.<domain>)` on `websecure` to `http://vaultwarden:8080`. Written after the container is up; Traefik picks it up without a restart.
+
+### Design choices
+
+- **SQLite, not Postgres.** One user or a family is far below what SQLite handles, and it is one container less to update and dump.
+- **Only the internal network.** The container joins `proxy-vaultwarden` and nothing else: no published ports, no other service, and no route to the Internet. A compromised Vaultwarden cannot send the vaults anywhere. The cost: no favicon downloads (`DISABLE_ICON_DOWNLOAD`, the clients show generic icons), no e-mail, no Have I Been Pwned check from the server.
+- **No admin page.** It is enabled only by `ADMIN_TOKEN`, which is not set: one secret less, and no page that can change every user. Sign-ups are a variable instead (`vaultwarden_signups_allowed`), turned on only to create an account.
+- **No password hints** (`PASSWORD_HINTS_ALLOWED=false`): a hint is readable by whoever knows the e-mail address.
+- **Hardening**: read-only root filesystem (only `/data`, `/logs` and a tmpfs `/tmp` are writable), every capability dropped, `no-new-privileges`. Vaultwarden listens on 8080 (`ROCKET_PORT`), because with no capabilities it cannot bind 80 inside the container.
+- **Real client IP**: Traefik sets `X-Real-Ip`, the header Vaultwarden reads by default, so `logs/vaultwarden.log` shows who tried to log in.
+
+Check:
+
+```bash
+docker-svc ps --filter name=vaultwarden --format '{{.Names}} {{.Status}}'        # healthy
+docker-svc network inspect proxy-vaultwarden --format '{{range .Containers}}{{.Name}} {{end}}'   # traefik and vaultwarden
+curl -s https://vault.greyroom.net/alive                                          # from a client: a date
+sudo /etc/backup/pre.d/vaultwarden && sudo ls -l /srv/docker/app/vaultwarden/dump/
+```
+
+---
+
+## 17. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -789,13 +841,13 @@ Container images are **not** updated here: they will follow the `update-containe
 
 ---
 
-## 17. The pre-commit hook
+## 18. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 18. Files the playbook creates on the server
+## 19. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -812,7 +864,7 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/usr/local/sbin/network-rollback`, `/etc/systemd/system/network-rollback.service` | network | Safety net |
 | `/etc/nftables.conf` | firewall_host | Host firewall |
 | `/etc/apt/keyrings/docker.asc`, `/etc/apt/sources.list.d/docker.sources` | docker_rootless | Docker repository |
-| `/etc/sysctl.d/60-rootless-docker.conf` | docker_rootless | Unprivileged ports from 53 |
+| `/etc/sysctl.d/60-rootless-docker.conf` | docker_rootless | Unprivileged ports from 80 |
 | `~svc-docker/.config/docker/daemon.json` | docker_rootless | Container log limits |
 | `~svc-docker/.config/systemd/user/docker.service` | docker_rootless | Rootless daemon |
 | `/usr/local/bin/docker-svc` | docker_rootless | Wrapper for the admin |
@@ -820,6 +872,9 @@ Container images are **not** updated here: they will follow the `update-containe
 | `/srv/docker/system/traefik/` | traefik | Compose file, configuration, certificates, Cloudflare token, logs |
 | Docker networks `proxy-<name>` | traefik | One internal network per service in `traefik_networks` |
 | `/etc/logrotate.d/traefik` | traefik | Daily rotation of the Traefik logs |
+| `/srv/docker/app/vaultwarden/` | vaultwarden | Compose file, data, database dump, log |
+| `/srv/docker/system/traefik/dynamic/vaultwarden.yml` | vaultwarden | Traefik route |
+| `/etc/logrotate.d/vaultwarden`, `/etc/backup/pre.d/vaultwarden` | vaultwarden | Log rotation, database dump before the backup |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -840,11 +895,11 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 19. Known limits and points to review
+## 20. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
-- **`ip_unprivileged_port_start=53`** applies to every user, not just `svc-docker`.
+- **`ip_unprivileged_port_start=80`** applies to every user, not just `svc-docker`.
 - **`kernel.unprivileged_bpf_disabled=1`** cannot be undone without a reboot.
 - **The admin's sudo is passwordless**: whoever has the admin's SSH key, or Semaphore's, is root. Protect both keys accordingly (see the open point on Semaphore in the project document).
 - **The network role reboots** whenever the configuration changes. Run it in a maintenance window.
@@ -857,13 +912,14 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **One certificate for every name.** If the wildcard expires (DNS challenge failing for weeks), every service fails at once. Monitoring certificate expiry is an open point (Uptime Kuma).
 - **The dashboard is protected by a password only**; it is reachable only through WireGuard, like everything else.
 - **The backup is file-level.** Databases are consistent only through the dump scripts in `/etc/backup/pre.d/`; a database file copied while it is written may not restore. Every application role must add its dump script.
+- **Vaultwarden sends no e-mail.** Without SMTP (egress is blocked) there is no reset by mail and no new-device notice: the master password must be on the emergency sheet, and the vault export is an open point in the project document.
 - **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
 - **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 20. How it was tested
+## 21. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -876,6 +932,7 @@ On a Debian 13 VM (the official cloud image, switched to ifupdown to match a net
 | `--tags network` with a configuration that cuts access | Server back on the previous configuration by itself; Ansible fails with an explicit message |
 | ClamAV with the EICAR file | Detected, quarantined, notification attempted |
 | Rootless container on port 80 | The container sees the real client IP |
+| Vaultwarden 1.37.5 with the role's options (read-only, no capabilities, port 8080, internal network), in rootless Podman | Healthy; writes only to `data/` and `logs/`; no Internet access; `/admin` disabled; online SQLite backup of the live database passes `integrity_check` |
 | ansible-lint (production profile), yamllint, shellcheck | No findings |
 
 The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested on a Debian 13 container with systemd and SSH (the lab VM was off):
