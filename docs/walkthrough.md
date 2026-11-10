@@ -739,7 +739,7 @@ For each name in `traefik_networks`, creates `proxy-<name>` with `--internal` if
 - **Hardening**: read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped except binding ports, `no-new-privileges`. In rootless Docker, root inside the container is `svc-docker` on the host.
 - **Ports 80 and 443 on `services_address` only.** Port 80 only redirects to HTTPS.
 - **10-minute read timeout on `websecure`** (`respondingTimeouts.readTimeout` and `idleTimeout`, 600 s). Traefik's default, 60 s, cuts any request that takes longer to arrive: an Immich video uploaded over WireGuard would fail with error 499.
-- **For every router on `websecure`**: HSTS for a year, including subdomains, and `nosniff`. TLS 1.2 or later; `sniStrict` refuses names Traefik has no certificate for.
+- **For every router on `websecure`**: HSTS for a year, including subdomains, `nosniff`, `frameDeny` (X-Frame-Options: DENY), `browserXssFilter`, and `referrerPolicy` (`same-origin`). TLS 1.2 or later; `sniStrict` refuses names Traefik has no certificate for.
 - **Logs on disk**: `logs/traefik.log` and `logs/access.log` (one line per request, with the real client IP thanks to the slirp4netns port driver). The access log includes the dashboard (`addInternals`), so failed logins show up with the user name tried; it leaves out the health check (`observability.accessLogs: false` on the `ping` entry point) and the HTTP-to-HTTPS redirects. In the container log they would be lost whenever the container is recreated, at every update. `/etc/logrotate.d/traefik` rotates them daily with `copytruncate` and keeps `traefik_log_retention_days` (30) compressed files; being under `/srv`, they are also in the nightly backup. `docker-svc logs traefik` shows only what Traefik prints before it opens its log files.
 - **Dashboard** on `proxy.<domain>`, behind basic authentication with bcrypt hashes from the vault. It shows the routes and their errors, and changes nothing.
 
@@ -1087,7 +1087,7 @@ The `traefik` templates were rendered by Ansible and run with Docker Compose (po
 | Start with `--wait` | Healthy; the only error is the expected ACME failure (fake token) |
 | HTTP | Permanent redirect to HTTPS (301 for GET, 308 for other methods) |
 | Dashboard without password, with the right one, with a wrong one | 401, 200, 401 |
-| Response headers | HSTS (1 year, subdomains) and `nosniff` |
+| Response headers | HSTS (1 year, subdomains), `nosniff`, `frameDeny`, `browserXssFilter`, and `referrerPolicy` |
 | Unknown host name, TLS 1.1 | 404, refused |
 | `sniStrict` with no valid certificate yet | TLS refused, as intended |
 | Container settings | Read-only root filesystem, capabilities dropped |

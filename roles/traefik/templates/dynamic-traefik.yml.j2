@@ -19,11 +19,16 @@ http:
           - "{{ user }}"
 {% endfor %}
     # Applied to every router on websecure (see the static configuration).
+    # Security headers: HSTS, MIME sniffing protection, clickjacking protection,
+    # and referrer policy.
     secure-headers:
       headers:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         contentTypeNosniff: true
+        frameDeny: true
+        browserXssFilter: true
+        referrerPolicy: "same-origin"
 
 tls:
   options:
