@@ -65,12 +65,10 @@ systemctl is-enabled docker.service docker.socket containerd.service   # all dis
 docker-svc info --format '{{.SecurityOptions}}'                         # contains name=rootless
 ```
 
-Real client IP check (from a machine on another network):
+Real client IP: Traefik's access log must show the address of the client, not `10.0.2.x` (the rootlesskit network). From a machine on another network, open any service, then on the server:
 
 ```bash
-docker-svc run -d --rm --name whoami -p <services IP>:80:80 traefik/whoami:v1.10
-curl http://<services IP>/ | grep RemoteAddr      # shows the client's address, not 10.0.2.x
-docker-svc stop whoami
+sudo tail -n 3 /srv/docker/system/traefik/logs/access.log     # the first field is the client's IP
 ```
 
 ## 7. Notifications

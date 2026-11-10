@@ -64,7 +64,9 @@
 
         🖥️ Server: {{ ansible_facts['hostname'] }}
 
-        The upgrade installed a newer kernel, or a package asked for a reboot. update_os_allow_reboot is false (the disk is encrypted): reboot by hand when you can type the passphrase (sudo reboot).
+        The upgrade installed a newer kernel, or a package asked for a reboot.
+        update_os_allow_reboot is false (the disk is encrypted):
+        reboot by hand when you can type the passphrase (sudo reboot).
   when: update_os_needs_reboot | bool and not update_os_allow_reboot | bool
   changed_when: false
   failed_when: false

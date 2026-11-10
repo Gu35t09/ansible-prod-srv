@@ -76,7 +76,7 @@ The repository is the source of truth. A compose file or a configuration file ch
 | Change a setting | Edit the role or `group_vars` in the repository, then `ansible-playbook site.yml --tags <service> --ask-vault-pass` |
 | Update an image | Merge the Renovate PR (or change the pinned tag and digest in the role's defaults by hand), then `--tags update-containers` |
 | Add a service | Add its name to `traefik_networks` in `main.yml` and run `--tags traefik` (it creates the service's network), then deploy the service role. See the walkthrough, "Adding a service" |
-| Remove a service | Remove its role from `site.yml` and its name from `traefik_networks`, stop it (`docker-svc compose -f ... down`), run `--tags traefik`, then remove its network (`docker-svc network rm proxy-<name>`) and, once you are sure, its directory |
+| Remove a service | Remove its role from `site.yml` and its name from `traefik_networks`; stop it (`docker-svc compose -f ... down`); delete its route `/srv/docker/system/traefik/dynamic/<name>.yml` and, if it has one, its dump script `/etc/backup/pre.d/<name>` (otherwise the backup reports a failed pre-backup script every night); run `--tags traefik`; remove its network (`docker-svc network rm proxy-<name>`) and, once you are sure, its directory |
 
 Restarting, stopping and looking at containers by hand is fine: it changes nothing that Ansible manages.
 
@@ -100,10 +100,11 @@ The networks are created by the Traefik role from `traefik_networks`, not by com
 | Service | Where |
 | --- | --- |
 | Traefik | `sudo tail -f /srv/docker/system/traefik/logs/access.log` (requests) and `traefik.log` (errors, certificates); rotated daily, 30 days |
+| Vaultwarden | `sudo tail -f /srv/docker/app/vaultwarden/logs/vaultwarden.log` (logins, failed logins with the client IP); rotated daily, 30 days |
 | Other containers | `docker-svc logs <container>`; at most 3 files of 10 MB per container, **lost when the container is recreated** (at every update) |
 | Rootless Docker daemon | `sudo journalctl _SYSTEMD_USER_UNIT=docker.service _UID=$(id -u svc-docker)` |
 
-A service whose logs matter after an update (security events, errors to investigate) should write them to files under its directory, like Traefik.
+A service whose logs matter after an update (security events, errors to investigate) should write them to files under its directory, like Traefik and Vaultwarden.
 
 ## 6. Disk space
 
