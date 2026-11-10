@@ -17,22 +17,22 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │       ├── main.yml                  # site settings: admin user, keys, addresses, VLANs
 │       ├── vault.yml                 # secrets, always encrypted (create it from the example)
 │       └── vault.yml.example
-├── roles/
-│   ├── base/                         # packages, time, journal, unattended-upgrades, needrestart
+├── roles/                            # in the order site.yml runs them
+│   ├── base/                         # packages, time, journal, unattended-upgrades and its Telegram report
 │   ├── hardening/                    # admin user, sudo, SSH drop-in, sysctl
 │   ├── network/                      # VLAN trunk, source routing, rollback (tag: network)
 │   ├── firewall_host/                # nftables, inbound deny by default
 │   ├── docker_rootless/              # Docker for a dedicated service user
-│   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
-│   ├── vaultwarden/                  # password manager, SQLite (tags: vaultwarden, update-containers)
-│   ├── immich/                       # photos, without machine learning (tags: immich, update-containers)
-│   ├── notify/                       # Telegram helper shared by the other roles
 │   ├── clamav/                       # daemon, scheduled scan, quarantine
 │   ├── monitoring/                   # SMART and disk space alerts
 │   ├── integrity/                    # NTP, sshd logging, unpackaged libraries, Ebury
 │   ├── yara/                         # YARA rules and nightly scan
 │   ├── backup/                       # restic to a USB disk and an S3 bucket
-│   └── update_os/                    # package upgrades and reboot (tag: update-os)
+│   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
+│   ├── vaultwarden/                  # password manager, SQLite (tags: vaultwarden, update-containers)
+│   ├── immich/                       # photos, without machine learning (tags: immich, update-containers)
+│   ├── update_os/                    # package upgrades, reboot or report (tag: update-os)
+│   └── notify/                       # Telegram helper, a dependency of the roles that send messages
 ├── renovate.json                     # which image versions Renovate watches
 ├── .github/workflows/renovate.yml    # runs Renovate every Saturday, Telegram summary
 ├── .github/renovate-image            # the Renovate image the workflow runs
@@ -49,16 +49,16 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
 | `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 80/443 only to the services address; forwarding off; outbound left to OPNsense. |
 | `docker_rootless` | Docker from the official repository, rootful daemon disabled, rootless daemon as a user unit of `svc-docker` (no login, no sudo). Port driver `slirp4netns`, so containers see the real client IP. |
-| `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
-| `vaultwarden` | Vaultwarden in `/srv/docker/app/vaultwarden` with SQLite, image pinned by tag and digest, on `vault.<domain>`. Only on its internal network with Traefik: no published ports, no Internet access (so no favicon downloads). Sign-ups off, admin page disabled, password hints off. Read-only container with no capabilities. A dump script for the backup copies the database with SQLite's online backup and checks it. |
-| `immich` | Immich in `/srv/docker/app/immich` on `photo.<domain>`: server, Postgres and Valkey, images pinned by tag and digest; **no machine learning** container. Only the server is on Traefik's network; the database and Valkey share an internal network with it. No container has Internet access. Read-only server with no capabilities; Postgres and Valkey keep only what their entrypoints need. A dump script for the backup runs `pg_dumpall` and checks the result; the live database directory is left out of the backup. |
-| `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 | `clamav` | `clamav-daemon` and `clamav-freshclam`, a systemd timer for the scan (daily at 00:00), quarantine outside the scanned paths, Telegram report. Image layers are not scanned. |
 | `monitoring` | smartd with self-tests and temperature alerts (skipped on VMs), disk space check every 15 minutes with one alert per threshold crossing. |
 | `integrity` | Every 15 minutes: NTP on and synchronized, sshd logging at INFO or above, no setuid/setgid or ownerless files and no shared object outside the packages in the library directories (how Ebury 1.8.3 hides), no `/etc/ld.so.preload`, nothing but sshd in `ssh.service`, no Ebury socket. Telegram alert when the findings change, repeated daily while they last. |
-| `backup` | restic, daily at 02:30, to two encrypted repositories: an external USB disk (found by its label, mounted only during the backup) and an S3 bucket. Backs up `/srv` and `/etc` after the applications' dump scripts in `/etc/backup/pre.d/`. Keeps 7 daily, 4 weekly, 12 monthly snapshots; prune and `restic check` on Sundays. One Telegram message per run with the result of each copy. |
 | `yara` | YARA with rules vendored in the repository (ESET for Ebury and the OpenSSH backdoors, Elastic for Linux rootkits, miners, botnets, C2 implants, webshells). Nightly scan at 01:00 of binaries, libraries, configuration, temporary directories, application data and container layers, plus the memory of the sshd processes. Reports only; nothing is moved. |
+| `backup` | restic, daily at 02:30, to two encrypted repositories: an external USB disk (found by its label, mounted only during the backup) and an S3 bucket. Backs up `/srv` and `/etc` after the applications' dump scripts in `/etc/backup/pre.d/`. Keeps 7 daily, 4 weekly, 12 monthly snapshots; prune and `restic check` on Sundays. One Telegram message per run with the result of each copy. |
+| `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
+| `vaultwarden` | Vaultwarden in `/srv/docker/app/vaultwarden` with SQLite, image pinned by tag and digest, on `vault.<domain>`. Only on its internal network with Traefik: no published ports, no Internet access (so no favicon downloads). Sign-ups off, admin page disabled, password hints off. Read-only container with no capabilities. A dump script for the backup copies the database with SQLite's online backup and checks it. |
+| `immich` | Immich in `/srv/docker/app/immich` on `photo.<domain>`: server, Postgres and Valkey, images pinned by tag and digest; **no machine learning** container. Only the server is on Traefik's network; the database and Valkey share an internal network with it. No container has Internet access. Read-only server with no capabilities; Postgres and Valkey keep only what their entrypoints need. A dump script for the backup runs `pg_dumpall` and checks the result; the live database directory is left out of the backup. |
 | `update_os` | `apt dist-upgrade`; when a newer kernel is waiting or a package asks for a reboot, reboot (if allowed) or report it on Telegram; restart of the rootless daemon after a Docker upgrade. |
+| `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 
 ## Tags and Semaphore jobs
 
@@ -81,7 +81,8 @@ In Semaphore, store the vault password in the Key Store and attach it to the tem
 Install from the netinst image with SSH server and no desktop. During the installation:
 
 - create the admin user (the name in `admin_user`) and leave the root password empty, so the user gets sudo;
-- configure a static address on the management network: this is what `ansible_host` points to.
+- configure a static address on the management network: this is what `ansible_host` points to;
+- prod-srv-01 uses guided partitioning with **encrypted LVM** (LUKS). The passphrase is then typed at the console at every boot: nothing reboots the server by itself (`update_os_allow_reboot: false`), and the network change below needs someone at the machine.
 
 Then copy your key once so Ansible can log in: `ssh-copy-id <admin_user>@<management IP>`.
 
@@ -149,7 +150,7 @@ When the switch trunk is ready, fill in `network_links` and run:
 ansible-playbook site.yml --tags network --ask-vault-pass
 ```
 
-The role keeps the current configuration aside, installs the new one and reboots. If Ansible reconnects and the new configuration is in place, it confirms it. If not, after `network_rollback_minutes` (5 by default) the server restores the previous configuration and reboots by itself, and the play fails with a message saying so.
+The role keeps the current configuration aside, installs the new one and reboots: with the encrypted disk, be at the console to type the passphrase. If Ansible reconnects and the new configuration is in place, it confirms it. If not, after `network_rollback_minutes` (5 by default) the server restores the previous configuration and reboots by itself (the passphrase again), and the play fails with a message saying so.
 
 Once the services VLAN is up, set `services_address`, and `ssh_listen_address` to the management IP, then run `--tags security`.
 
@@ -160,27 +161,28 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `admin_user`, `admin_ssh_keys` | — | The playbook stops if the key list is empty or `ansible_user` differs from `admin_user`. |
+| `ntp_servers`, `network_dns_servers` | — | OPNsense: egress to the Internet is blocked, so time and DNS come from the firewall. |
 | `mgmt_address`, `services_address` | `ansible_host`, empty | Used by nftables. Empty means "any address". |
 | `ssh_listen_address` | empty | Must equal `ansible_host` when set. |
+| `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `network_links` | — | One entry per network; exactly one with `default_route: true`; `vlan: null` means untagged. |
 | `docker_user` | `svc-docker` | Owner of the rootless daemon and of the application data. |
 | `docker_rootlesskit_cidr` | empty (`10.0.2.0/24`) | Change it if any network the server talks to uses `10.0.2.0/24`, or replies to those clients get lost. |
 | `clamav_scan_paths` | admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp` | Container data lives under `/srv/docker`. Missing paths are skipped. |
 | `clamav_action_on_detect` | `quarantine` | Or `notify_only`, `remove`. |
 | `disk_space_warn_percent` | `85` | |
-| `update_os_allow_reboot` | `true` (`false` in `main.yml`) | With `false`, the job only reports that a reboot is needed, in its output and on Telegram. False on prod-srv-01: the disk is encrypted and its passphrase is typed at the console. |
-| `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
+| `yara_scan_paths`, `yara_exclude_paths` | see `roles/yara/defaults/main.yml` | `/etc/yara` (the rules) and the ClamAV quarantine are always left out. |
+| `backup_paths` | `/srv`, `/etc` | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
+| `backup_exclude` | none; in `main.yml`: `/srv/docker/app/immich/postgres` | Live database directories: their dump scripts save them instead. |
+| `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
+| `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
 | `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |
 | `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
-| `immich_db_password` | — | From the vault (`vault_immich_db_password`). Used only when the database is created: changing it later does not change the database password. |
-| `backup_exclude` | `/srv/docker/app/immich/postgres` (in `main.yml`) | Live database directories: their dump scripts save them instead. |
 | `vaultwarden_signups_allowed` | `false` | Turn on only to create an account (see "First setup"). |
-| `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
-| `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
-| `backup_paths`, `backup_exclude` | `/srv`, `/etc`; none | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
-| `yara_scan_paths`, `yara_exclude_paths` | see `roles/yara/defaults/main.yml` | `/etc/yara` (the rules) and the ClamAV quarantine are always left out. |
+| `immich_db_password` | — | From the vault (`vault_immich_db_password`). Used only when the database is created: changing it later does not change the database password. |
+| `update_os_allow_reboot` | `true`; in `main.yml`: `false` | With `false`, the job only reports that a reboot is needed, in its output and on Telegram. False on prod-srv-01: the disk is encrypted and its passphrase is typed at the console. |
 
 ## Working with Docker
 
@@ -232,6 +234,10 @@ The server reaches only the destinations allowed on OPNsense. For the roles in t
 | `api.telegram.org` | notifications |
 | `api.cloudflare.com`, `acme-v02.api.letsencrypt.org` | Traefik certificates (DNS challenge) |
 | the S3 endpoint (`backup_s3_endpoint`) | backup |
+
+On OPNsense, the server's VLANs also need **DNS (53) and NTP (123) to the firewall itself**: the server resolves names through Unbound and takes the time from OPNsense. Without the NTP rule the integrity check reports an unsynchronized clock.
+
+Use aliases of type **Host(s)**, one host name per line (not "URL (IPs)", which downloads IP lists from web pages). CDNs such as CloudFront change addresses every minute: set *Firewall → Settings → Advanced → Aliases Resolve Interval* to 30 seconds, or pulls fail now and then when the server gets an address the alias does not have yet.
 
 The YARA rules need no outbound access: they are copied from the repository. Refresh them on the laptop with `scripts/update-yara-rules.sh` (see the maintenance guide).
 

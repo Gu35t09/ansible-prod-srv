@@ -40,7 +40,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`), then `update_os`. `notify` is not in the list: it runs as a dependency of `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`).
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
 
 The order matters:
 
@@ -53,11 +53,13 @@ The order matters:
 
 | Tag | Roles |
 | --- | --- |
-| `base` | base |
+| `base` | base (+ notify) |
 | `hardening`, `security` | hardening |
 | `firewall`, `security` | firewall_host |
 | `docker` | docker_rootless |
 | `traefik`, `update-containers` | traefik |
+| `vaultwarden`, `update-containers` | vaultwarden |
+| `immich`, `update-containers` | immich |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
@@ -160,7 +162,7 @@ A handler is a task that runs only when another task reports "changed" and names
 
 ```ini
 [prod_servers]
-prod-srv ansible_host=10.0.10.10 ansible_user=mattia
+prod-srv-01 ansible_host=10.123.11.11 ansible_user=v
 ```
 
 - `ansible_host`: the **management** IP. Three checks depend on it: `ssh_listen_address` must equal it, the network role requires it among the configured addresses, and nftables allows SSH only to it by default.
@@ -179,10 +181,16 @@ prod-srv ansible_host=10.0.10.10 ansible_user=mattia
 | `ssh_listen_address` | hardening | Address sshd binds to. Empty means all addresses. |
 | `network_parent_interface`, `network_links`, `network_dns_servers` | network | Physical NIC, one entry per VLAN, DNS resolvers. |
 | `telegram_bot_token`, `telegram_chat_id` | notify | Read from `vault_telegram_*` in the vault. |
+| `update_os_allow_reboot` | update_os | `false`: the disk is encrypted, so the update job reports a needed reboot instead of rebooting. |
+| `traefik_domain`, `traefik_networks` | traefik | The domain of the wildcard certificate, and one internal network per service behind Traefik. |
+| `cloudflare_dns_api_token`, `traefik_dashboard_users` | traefik | Read from the vault. |
+| `immich_db_password` | immich | Read from the vault. |
+| `backup_usb_label`, `backup_s3_endpoint`, `backup_s3_bucket`, `backup_exclude` | backup | The USB disk's label, the S3 bucket, and the live database directories left out (their dumps are backed up). |
+| `restic_password`, `backup_s3_access_key`, `backup_s3_secret_key` | backup | Read from the vault. |
 
 ### vault.yml
 
-It holds only `vault_telegram_bot_token` and `vault_telegram_chat_id`. The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
+It holds the secrets, all with the `vault_` prefix: the Telegram token and chat ID, the restic password, the S3 key, the Cloudflare token, the Traefik dashboard users and the Immich database password (`vault.yml.example` lists them, with how to generate each). The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
 
 ---
 
@@ -539,7 +547,7 @@ A systemd timer instead of cron: logs end up in the journal, `Persistent=true` r
 
 1. Creates the log directory; if the action is `quarantine`, also the quarantine directory.
 2. Deletes `scan_*.log` files older than `clamav_log_retention_days` (30).
-3. Skips paths that do not exist yet, with a warning in the log. `/srv` will be empty until the first application.
+3. Skips paths that do not exist, with a warning in the log.
 4. Uses `clamdscan --multiscan --fdpass` if the daemon is active. `--fdpass` makes the script, running as root, open the files and pass the descriptors to clamd, which runs as the `clamav` user and could not read files owned by others. Otherwise it falls back to `clamscan --recursive`, which is slower.
 5. Adds `--move=<quarantine>` or `--remove=yes` depending on `clamav_action_on_detect`.
 6. Reads ClamAV's exit code: `1` = threats (sends a message with up to 20 files), `>1` = error, `0` = clean (sends a summary if `clamav_notify_clean` is on).
@@ -675,7 +683,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 ### The backup script (`/usr/local/sbin/backup`)
 
-1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database will add one that dumps it under `/srv/docker/{system,app}/<name>/`. If one fails, the run goes on with the previous dump and the report shows a warning.
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden` and `immich`). If one fails, the run goes on with the previous dump and the report shows a warning.
 2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
 3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
 4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check`. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
@@ -737,36 +745,30 @@ For each name in `traefik_networks`, creates `proxy-<name>` with `--internal` if
 
 ### Adding a service (for the application roles)
 
-1. Add the name to `traefik_networks` in `main.yml` and run `--tags traefik`: it creates `proxy-<name>` and attaches Traefik to it.
-2. In the service's compose file, put the container Traefik talks to on that network, and keep the others (the database) off it, on a network of their own:
+The `vaultwarden` role is the model for a single container, `immich` for one with a database. A new role:
+
+1. **Network**: add the name to `traefik_networks` in `main.yml` and run `--tags traefik`: it creates `proxy-<name>` and attaches Traefik to it. The role asserts the name is there.
+2. **Image**: in `defaults/main.yml`, as `<name>_image: "<image>:<tag>@sha256:<digest>"` on one line. Renovate finds images only in this form.
+3. **Compose file** (`compose.yml.j2`): the container Traefik talks to joins `proxy-<name>`; the others (the database) stay on an internal network of their own; no published ports. Read-only filesystem and no capabilities where the image allows it.
    ```yaml
    services:
      <name>:
-       networks: [proxy-<name>, default]
-     db:
-       networks: [default]
+       networks: [proxy-<name>, backend]
+     database:
+       networks: [backend]
    networks:
      proxy-<name>:
        external: true
+     backend:
+       internal: true
    ```
-   Do not publish its ports.
-3. Write `/srv/docker/system/traefik/dynamic/<name>.yml`:
-   ```yaml
-   http:
-     routers:
-       <name>:
-         rule: "Host(`<name>.greyroom.net`)"
-         entryPoints: [websecure]
-         service: <name>
-     services:
-       <name>:
-         loadBalancer:
-           servers:
-             - url: "http://<container name>:<port>"
-   ```
-4. Add the name to the internal DNS.
+4. **Route**: the role writes `/srv/docker/system/traefik/dynamic/<name>.yml` (template `traefik-route.yml.j2`) after the container is up, with `Host(<name>.<domain>)` to `http://<compose service>:<port>`. Traefik picks it up without a restart.
+5. **Database**: a dump script in `/etc/backup/pre.d/<name>` (no dot in the name), and the live database directory in `backup_exclude`.
+6. **Tags** in `site.yml`: `[<name>, update-containers]`, after the other container services.
+7. **DNS**: a host override `<name>.greyroom.net` → services address in Unbound.
+8. **Docs**: a walkthrough section, the README tables, a restore procedure in the maintenance guide, checks in `verify.md`.
 
-Check: `sudo tail /srv/docker/system/traefik/logs/traefik.log`, the dashboard, and `curl -sI https://proxy.greyroom.net/dashboard/` from a client (401 without a password).
+Check: the route in the dashboard (`https://proxy.greyroom.net`), `sudo tail /srv/docker/system/traefik/logs/traefik.log`, and the service from a client.
 
 ---
 
@@ -1049,9 +1051,8 @@ On a Debian 13 VM (the official cloud image, switched to ifupdown to match a net
 | `--tags network` with a configuration that cuts access | Server back on the previous configuration by itself; Ansible fails with an explicit message |
 | ClamAV with the EICAR file | Detected, quarantined, notification attempted |
 | Rootless container on port 80 | The container sees the real client IP |
-| Vaultwarden 1.37.5 with the role's options (read-only, no capabilities, port 8080, internal network), in rootless Podman | Healthy; writes only to `data/` and `logs/`; no Internet access; `/admin` disabled; online SQLite backup of the live database passes `integrity_check` |
-| ansible-lint (production profile), yamllint, shellcheck | No findings |
-| Immich v3.3.6 with the role's options (server read-only with no capabilities; Postgres and Valkey with the reduced capabilities), in rootless Podman | Admin created, an image uploaded (original and thumbnails written); `pg_dumpall` dump restored into an empty Postgres with the asset present |
+
+Bugs found and fixed during these tests: `ansible_managed` undefined in `copy` tasks on ansible-core 2.20; clamd start skipped on the first run; unattended-upgrades not limited to security updates; the rootlesskit network colliding with `10.0.2.0/24`; the network rollback reported as a success.
 
 The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested on a Debian 13 container with systemd and SSH (the lab VM was off):
 
@@ -1063,6 +1064,8 @@ The `integrity` and `yara` roles and the NTP and `LogLevel` changes were tested 
 | YARA on clean Debian 13 and on six application images | No matches |
 | YARA with an EICAR file in `/tmp` | Detected, notification attempted |
 | A rule file removed from the repository | Deleted from the server at the next run |
+
+Bugs found and fixed during these tests: the rules and the compiled rules matching themselves; ESET's SSHDoor rules matching a clean sshd in memory; packaged symlinks hiding the implant they point to; Ansible's `fileglob` not matching subdirectories, which emptied the rule directory.
 
 The `backup` role was tested in the same container, with an S3 server (rclone `serve s3` with TLS) and a tmpfs in place of the USB disk:
 
@@ -1089,8 +1092,23 @@ The `traefik` templates were rendered by Ansible and run with Docker Compose (po
 | `sniStrict` with no valid certificate yet | TLS refused, as intended |
 | Container settings | Read-only root filesystem, capabilities dropped |
 
-Not tested: a real certificate (needs the token and the domain), on the lab VM with `--tags traefik`.
+The container roles were also run in rootless Podman on the laptop, with the same images and options:
 
-Bugs found and fixed during these tests: the rules and the compiled rules matching themselves; ESET's SSHDoor rules matching a clean sshd in memory; packaged symlinks hiding the implant they point to; Ansible's `fileglob` not matching subdirectories, which emptied the rule directory.
+| Test | Result |
+| --- | --- |
+| Vaultwarden 1.37.5 with the role's options (read-only, no capabilities, port 8080, internal network), in rootless Podman | Healthy; writes only to `data/` and `logs/`; no Internet access; `/admin` disabled; online SQLite backup of the live database passes `integrity_check` |
+| Immich v3.3.6 with the role's options (server read-only with no capabilities; Postgres and Valkey with the reduced capabilities), in rootless Podman | Admin created, an image uploaded (original and thumbnails written); `pg_dumpall` dump restored into an empty Postgres with the asset present |
 
-Bugs found and fixed during these tests: `ansible_managed` undefined in `copy` tasks on ansible-core 2.20; clamd start skipped on the first run; unattended-upgrades not limited to security updates; the rootlesskit network colliding with `10.0.2.0/24`; the network rollback reported as a success.
+On prod-srv-01 (November 2026), after the first deployment:
+
+| What | Result |
+| --- | --- |
+| Full run on a fresh Debian 13 with an encrypted disk, then the VLANs | OK, after the fixes below |
+| Traefik with the real domain | Let's Encrypt wildcard certificate for `greyroom.net` and `*.greyroom.net` |
+| Vaultwarden | Account created with sign-ups opened once, then closed |
+| Immich | Library and database migrated from a v2.7.5 instance (moved to VectorChord there first, then restored through Immich's web restore; file paths moved from `/usr/src/app/upload` to `/data` by Immich itself) |
+| Backup | Both copies OK with the Immich library (15 GB) |
+| Renovate on GitHub Actions | 3 PRs, Postgres 16 and the runner listed under Pending Approval, Telegram summary; the Traefik PR merged and applied with `update-containers` |
+| Static checks (November 2026) | ansible-lint 26.11 with the production profile: no findings; shellcheck on the 11 rendered scripts: no findings; every link and anchor in the documentation resolves |
+
+Bugs found and fixed in production: `update-os` failing on a host where `base` never ran (needrestart missing); the Docker apt cache refreshed only when the repository file changed; the wildcard certificate refused because the apex and wildcard TXT records were checked before Cloudflare served both (`delayBeforeChecks`); service restarts lost when a run failed midway, which left timesyncd on Debian's NTP pool (`force_handlers`); Renovate's workflow missing `statuses: write` and pinned to a tag that does not exist. On OPNsense: aliases of the wrong type (URL instead of Host), the CloudFront resolve interval, and no rule for NTP to the firewall (README, "Outbound access needed").

@@ -33,6 +33,7 @@ Contents:
 | Integrity check (NTP, sshd logging, libraries, Ebury) | Every 15 minutes | Telegram when the findings change, then daily while they last |
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
 | Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays | Telegram at every run |
+| Renovate (on GitHub, not on the server) | Saturday morning | Telegram when there are new PRs, updates to do by hand, or a run that did not finish |
 
 Nothing in this list reboots the server or updates container images. Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
 
@@ -85,7 +86,7 @@ Nothing in this list reboots the server or updates container images. Container i
 - Disaster recovery drill: rebuild the server on a lab VM from the repository and the backup (see [Rebuild the server](#rebuild-the-server)). Write down how long it took.
 - Check the Debian release calendar: Debian 13 gets security support until about mid-2028, then LTS. Plan the move to Debian 14 within a year of its release (see [Major Debian upgrade](#major-debian-upgrade)).
 - Review the SSH keys in `admin_ssh_keys` and remove the ones from devices you no longer use.
-- Rotate the Telegram token and the Cloudflare token.
+- Rotate the Telegram token (see [Rotate the Telegram token](#rotate-the-telegram-token): it is also a GitHub secret) and the Cloudflare token.
 
 ## 3. Semaphore setup
 
@@ -253,7 +254,8 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 2. `ansible-vault edit inventory/group_vars/prod_servers/vault.yml` and replace `vault_telegram_bot_token`.
 3. `ansible-playbook site.yml --tags monitoring --ask-vault-pass` (the `notify` role runs as a dependency).
 4. `sudo notify-telegram "New token works"`.
-5. Commit the encrypted vault.
+5. Update the `TELEGRAM_BOT_TOKEN` secret on GitHub (*Settings → Secrets and variables → Actions*), or Renovate's messages stop. Check with *Actions → Renovate → Run workflow*.
+6. Commit the encrypted vault.
 
 ### Change the vault password
 
@@ -378,14 +380,14 @@ Update `vault_traefik_dashboard_users` (new htpasswd line, see the README) or `v
 
 ### Change the network (VLANs, addresses)
 
-1. Plan a maintenance window: the server reboots.
-2. Make sure you can reach the server's console (monitor and keyboard) in case it goes wrong.
+1. Plan a maintenance window: the server reboots, and with the encrypted disk you type the passphrase at the console after each reboot. Be at the machine.
+2. Keep the console (monitor and keyboard) connected: it is also how you recover if the change goes wrong.
 3. Edit `network_links`. If the management address changes, also update `ansible_host` in `inventory/hosts.ini`, plus `ssh_listen_address` and `mgmt_address` if they are set.
 4. Prepare the switch and OPNsense first: the new VLAN must already work on the trunk.
 5. `ansible-playbook site.yml --tags network --ask-vault-pass`.
 6. Then run `--tags security`, so the firewall and sshd pick up the new addresses.
 
-If the change breaks access, the server returns to the previous configuration by itself within about 5 minutes after boot (see [The network change failed](#the-network-change-failed)).
+If the change breaks access, the server returns to the previous configuration by itself within about 5 minutes after boot, and reboots once more (type the passphrase again; see [The network change failed](#the-network-change-failed)).
 
 ### Reboot by hand
 
@@ -429,7 +431,7 @@ Read the Semaphore output, then:
 | Failed task | Likely cause | What to do |
 | --- | --- | --- |
 | Upgrade all packages | Repository unreachable, or dpkg interrupted | Check egress on OPNsense (`deb.debian.org`, `security.debian.org`, `download.docker.com`). On the server: `sudo dpkg --configure -a`, then `sudo apt update`. |
-| Reboot the server | The server did not come back within 10 minutes | Check the console. Usually a slow boot or a disk check; if it does not boot, see [Recovery](#7-recovery). |
+| Reboot the server (only with `update_os_allow_reboot: true`) | The server did not come back within 10 minutes | Check the console: with the encrypted disk it waits for the passphrase. Otherwise a slow boot or a disk check; if it does not boot, see [Recovery](#7-recovery). |
 | Check that the rootless Docker daemon is running | Daemon not starting after the upgrade | See [Rootless Docker does not start](#rootless-docker-does-not-start). |
 
 ### No certificate, or the certificate does not renew
@@ -486,7 +488,7 @@ From inside out:
 
 The play fails with "The server restored its previous network configuration", or it fails at the reboot step.
 
-1. Wait 5–10 minutes: the server restores the old configuration and reboots by itself.
+1. Wait 5–10 minutes: the server restores the old configuration and reboots by itself. Type the passphrase at the console when it asks.
 2. Reconnect on the old address and read what happened:
    ```bash
    journalctl -t network-rollback
@@ -517,12 +519,15 @@ With a single disk, replacing it means rebuilding the server:
 
 This is also the yearly drill, on a lab VM.
 
-1. Install Debian 13 from netinst: admin user with the same name, empty root password, static IP on the management network, SSH server.
+1. Install Debian 13 from netinst: admin user with the same name, empty root password, static IP on the management network, SSH server, guided partitioning with encrypted LVM (a new passphrase is fine).
 2. `ssh-copy-id` your key.
 3. Remove the old host key from your `known_hosts`, since the server has a new one: `ssh-keygen -R <management IP>`.
 4. `ansible-playbook site.yml --ask-vault-pass`.
-5. `ansible-playbook site.yml --tags network --ask-vault-pass` to move to the VLANs, then `--tags security`.
-6. Restore the data: `sudo backup usb restore latest --target /` (or `s3`, if the USB disk is lost too), then deploy the applications (procedure to be completed with the application roles). The playbook run in step 4 already wrote the credentials, so the restore needs only the vault.
+5. `ansible-playbook site.yml --tags network --ask-vault-pass` to move to the VLANs (at the console: it reboots), then `--tags security`.
+6. Restore the applications' data, **only `/srv`**. Never restore `/etc` over the new system: `/etc/crypttab` and `/etc/fstab` name the old disk, and the server would not boot; the playbook has already rebuilt `/etc`. If you need an old file from `/etc`, restore it into `/tmp/restore` and copy it by hand.
+   - Every service except Immich and Vaultwarden: stop it, `sudo backup usb restore latest --target / --include /srv/docker/<system or app>/<name>` (or `s3` if the USB disk is lost too), start it.
+   - Vaultwarden and Immich: follow [Restore Vaultwarden](#restore-vaultwarden) and [Restore Immich](#restore-immich), which load the database from its dump.
+   The playbook run in step 4 already wrote the credentials, so the restore needs only the vault.
 7. Check everything with `verify.md`.
 8. Note how long it took and what was missing from this guide, then update it.
 
@@ -531,7 +536,7 @@ This is also the yearly drill, on a lab VM.
 1. Isolate the server: on OPNsense, block all traffic from and to its VLANs, except your management access.
 2. Do not reboot and do not delete anything yet: logs and files are evidence. Do not type passwords on the server (Ebury records them); work in a clean shell: `H=1 I=1 LD_PRELOAD=: LD_DEBUG=: bash`.
 3. Copy what you need for the analysis to another machine: the journal (`journalctl -o export`), the ClamAV and YARA logs, the quarantine, the list of processes and connections (`ps auxf`, `ss -tupan`), and any file named in an integrity or YARA alert. A clean check from the running system proves little: if you can, examine the disk from a rescue system or an image.
-4. Rotate every secret the server held: the Telegram token, the Cloudflare token and the application passwords. Rotate the SSH keys as well if the admin account was involved.
+4. Rotate every secret the server held: the Telegram token (and its GitHub secret), the Cloudflare token, the S3 key, the Immich database password and the application passwords. Rotate the SSH keys as well if the admin account was involved.
 5. Rebuild from scratch ([Rebuild the server](#rebuild-the-server)) and restore data from a backup **older** than the compromise.
 
 ## 8. Where to look
@@ -554,5 +559,9 @@ This is also the yearly drill, on a lab VM.
 | YARA scans | `/var/log/yara/scan_*.log`, `journalctl -u yara-scan.service` |
 | Time synchronization | `timedatectl timesync-status` |
 | Traefik | `/srv/docker/system/traefik/logs/traefik.log` (errors, certificates), `access.log` (requests), the dashboard on `https://proxy.greyroom.net` |
+| Vaultwarden | `/srv/docker/app/vaultwarden/logs/vaultwarden.log` (logins, failed logins with the client IP) |
+| Immich | `docker-svc logs immich_server` (lost when the container is recreated) |
+| Container status | `docker-svc ps` |
+| Renovate | *Actions → Renovate* on GitHub (one log per run), the Dependency Dashboard issue |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |
 | Errors in the last 24 hours | `journalctl -p err --since -24h` |
