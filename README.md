@@ -44,7 +44,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 
 | Role | What it does |
 | --- | --- |
-| `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. |
+| `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. A Telegram message after every unattended-upgrades run (upgraded, nothing to install, errors, reboot needed), and when the package lists fail to download. |
 | `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t` (`LogLevel VERBOSE`, so every login and its key are logged), kernel and network sysctl hardening. |
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
 | `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 80/443 only to the services address; forwarding off; outbound left to OPNsense. |
@@ -58,7 +58,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `integrity` | Every 15 minutes: NTP on and synchronized, sshd logging at INFO or above, no setuid/setgid or ownerless files and no shared object outside the packages in the library directories (how Ebury 1.8.3 hides), no `/etc/ld.so.preload`, nothing but sshd in `ssh.service`, no Ebury socket. Telegram alert when the findings change, repeated daily while they last. |
 | `backup` | restic, daily at 02:30, to two encrypted repositories: an external USB disk (found by its label, mounted only during the backup) and an S3 bucket. Backs up `/srv` and `/etc` after the applications' dump scripts in `/etc/backup/pre.d/`. Keeps 7 daily, 4 weekly, 12 monthly snapshots; prune and `restic check` on Sundays. One Telegram message per run with the result of each copy. |
 | `yara` | YARA with rules vendored in the repository (ESET for Ebury and the OpenSSH backdoors, Elastic for Linux rootkits, miners, botnets, C2 implants, webshells). Nightly scan at 01:00 of binaries, libraries, configuration, temporary directories, application data and container layers, plus the memory of the sshd processes. Reports only; nothing is moved. |
-| `update_os` | `apt dist-upgrade`, reboot only when a newer kernel is waiting or a package asks for it, restart of the rootless daemon after a Docker upgrade. |
+| `update_os` | `apt dist-upgrade`; when a newer kernel is waiting or a package asks for a reboot, reboot (if allowed) or report it on Telegram; restart of the rootless daemon after a Docker upgrade. |
 
 ## Tags and Semaphore jobs
 
@@ -67,7 +67,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
 | `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
-| `--tags update-os` | Scheduled Semaphore job: upgrades and reboot when needed. Never part of a full run. |
+| `--tags update-os` | Scheduled Semaphore job: upgrades; reports on Telegram when a reboot is needed (no automatic reboot on prod-srv-01). Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
 Both `update-os` and `network` carry the `never` tag, so they run only when asked for by name.
@@ -168,7 +168,7 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `clamav_scan_paths` | admin home, `/etc`, `/srv`, `/tmp`, `/var/tmp` | Container data lives under `/srv/docker`. Missing paths are skipped. |
 | `clamav_action_on_detect` | `quarantine` | Or `notify_only`, `remove`. |
 | `disk_space_warn_percent` | `85` | |
-| `update_os_allow_reboot` | `true` | With `false`, the job only reports that a reboot is needed. |
+| `update_os_allow_reboot` | `true` (`false` in `main.yml`) | With `false`, the job only reports that a reboot is needed, in its output and on Telegram. False on prod-srv-01: the disk is encrypted and its passphrase is typed at the console. |
 | `ssh_log_level` | `VERBOSE` | `INFO` or `VERBOSE`; the playbook refuses anything lower. |
 | `integrity_lib_allowlist` | empty | Shell patterns of shared objects allowed outside the packages. Keep it empty unless you install a library by hand. |
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |

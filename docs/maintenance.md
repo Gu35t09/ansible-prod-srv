@@ -23,7 +23,8 @@ Contents:
 
 | What | When | Where it reports |
 | --- | --- | --- |
-| Debian security updates (unattended-upgrades) | Daily | `/var/log/unattended-upgrades/` |
+| Debian security updates (unattended-upgrades) | Daily (`apt-daily-upgrade.timer`, around 06:00–07:00) | Telegram at every run: packages upgraded, nothing to install, or errors, and whether a reboot is needed |
+| Package list download (`apt-daily`) | Twice a day | Telegram only if it fails |
 | Service restarts after an upgrade (needrestart) | After each upgrade | journal |
 | ClamAV signature updates (freshclam) | Several times a day | `journalctl -u clamav-freshclam` |
 | ClamAV scan | Daily at 00:00 | Telegram |
@@ -33,13 +34,13 @@ Contents:
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
 | Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays | Telegram at every run |
 
-Nothing in this list reboots the server or updates container images. Those happen only through the `update-os` job and `update-containers`.
+Nothing in this list reboots the server or updates container images. Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
 
 ## 2. Maintenance calendar
 
 ### Every day (one minute)
 
-- Read the Telegram messages. Two arrive every day: "✅ CLAMAV: SCAN CLEAN" and "✅ BACKUP OK". They show that the server, the scans, the backup and the notifications all work: **if one does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message) and [Backup failed](#backup-failed).
+- Read the Telegram messages. Three arrive every day: "✅ UNATTENDED-UPGRADES" (packages upgraded or nothing to install), "✅ CLAMAV: SCAN CLEAN" and "✅ BACKUP OK". A message with "🔁 REBOOT REQUIRED" means a newer kernel (or a package) waits for a reboot: plan one (see [Reboot by hand](#reboot-by-hand)). They show that the server, the scans, the backup and the notifications all work: **if one does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message) and [Backup failed](#backup-failed).
 
 ### Every week
 
@@ -388,11 +389,13 @@ If the change breaks access, the server returns to the previous configuration by
 
 ### Reboot by hand
 
+The disk is encrypted: after the reboot the server waits at the console for the passphrase, and nothing (SSH included) is reachable until it is typed. Reboot when you can be at the machine.
+
 ```bash
 sudo systemctl reboot
 ```
 
-Everything comes back on its own: nftables, ClamAV, timers and the rootless Docker daemon (linger), and with it the containers that have `restart: unless-stopped` or `always`. After the reboot, check with `docker-svc ps`.
+Type the passphrase at the console. Then everything comes back on its own: nftables, ClamAV, timers and the rootless Docker daemon (linger), and with it the containers that have `restart: unless-stopped` or `always`. After the reboot, check with `docker-svc ps`.
 
 ### Major Debian upgrade
 
@@ -539,7 +542,7 @@ This is also the yearly drill, on a lab VM.
 | ClamAV scans | `/var/log/clamav/scan_*.log`, `journalctl -u clamav-scan.service` |
 | ClamAV quarantine | `/root/clamav-quarantine/` |
 | Signature updates | `journalctl -u clamav-freshclam` |
-| Automatic updates | `/var/log/unattended-upgrades/unattended-upgrades.log` |
+| Automatic updates | `/var/log/unattended-upgrades/unattended-upgrades.log`, `journalctl -u apt-daily-upgrade.service -u apt-daily.service` (the Telegram report is logged there too) |
 | apt history | `/var/log/apt/history.log` |
 | Firewall drops | `journalctl -k -g nft-input-drop` |
 | SSH | `journalctl -u ssh` |

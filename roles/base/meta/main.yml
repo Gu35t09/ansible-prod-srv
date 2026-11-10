@@ -1,0 +1,4 @@
+---
+# notify-telegram, used by the unattended-upgrades report.
+dependencies:
+  - role: notify

@@ -27,6 +27,18 @@ sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'
 
 Expected: only `codename=trixie-security,label=Debian-Security`.
 
+Telegram report:
+
+```bash
+systemctl cat apt-daily-upgrade.service | grep ExecStopPost     # /usr/local/sbin/unattended-upgrades-report upgrade
+systemctl cat apt-daily.service | grep ExecStopPost             # ... update
+sudo rm -f /var/lib/unattended-upgrades-report/last-run
+sudo SERVICE_RESULT=success /usr/local/sbin/unattended-upgrades-report upgrade   # re-sends the last run
+sudo SERVICE_RESULT=exit-code EXIT_STATUS=100 /usr/local/sbin/unattended-upgrades-report update   # the failure message
+```
+
+Expected: a "✅ UNATTENDED-UPGRADES" message (or "❌ … ERRORS" if the last run had errors), then "❌ APT: PACKAGE LISTS NOT UPDATED". After the next scheduled run (`systemctl list-timers apt-daily-upgrade.timer`), the message arrives by itself.
+
 ## 4. Network (after `--tags network`)
 
 ```bash
@@ -108,7 +120,7 @@ To test the alert path, lower `disk_space_warn_percent` below the current usage,
 ansible-playbook site.yml --tags update-os --ask-vault-pass
 ```
 
-A reboot happens only when needed. To test the reboot path: `sudo touch /run/reboot-required` on the server, then run the job. After the reboot the play checks that the rootless Docker daemon is running again.
+With `update_os_allow_reboot: false` (prod-srv-01) the job never reboots. To test the report: `sudo touch /run/reboot-required` on the server, run the job, and expect "🔁 UPDATE-OS: REBOOT REQUIRED" on Telegram and no reboot; then `sudo rm /run/reboot-required`.
 
 ## 11. Time and integrity check
 
