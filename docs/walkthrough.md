@@ -225,12 +225,20 @@ Writes `/etc/apt/apt.conf.d/52unattended-upgrades-local`. APT reads the files in
 
 - `#clear Unattended-Upgrade::Origins-Pattern;` empties the origin list defined in `50`. Without it, the list in `52` would be *added* to Debian's defaults and normal stable updates would be installed too. This was a real bug found during testing.
 - The only allowed origin is `trixie-security`.
-- `Automatic-Reboot "false"`: reboots happen only through the `update-os` job, when you decide.
+- `Automatic-Reboot "false"`: the server never reboots by itself. The disk is encrypted and its passphrase is typed at the console, so reboots are always done by hand.
 
 Check: `sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'`.
 
 **Enable the daily unattended-upgrades run**
 Turns on the daily list update and the unattended upgrade (APT timers `apt-daily` and `apt-daily-upgrade`).
+
+**Install the unattended-upgrades report** / **Create the drop-in directories of the apt jobs** / **Report after each apt job**
+`/usr/local/sbin/unattended-upgrades-report`, called by systemd through `ExecStopPost=` drop-ins (`/etc/systemd/system/apt-daily{,-upgrade}.service.d/50-telegram.conf`). `ExecStopPost` runs when the job ends, whatever its result, with `SERVICE_RESULT` set; both units are `Type=oneshot`. A change reloads systemd (**Reload systemd**).
+
+- After `apt-daily-upgrade.service` (`upgrade`): one Telegram message per unattended-upgrades run. It reads the last run of `/var/log/unattended-upgrades/unattended-upgrades.log` (from the last "Starting unattended upgrades script" line) and reports "N PACKAGE(S) UPGRADED" with the list, "NOTHING TO INSTALL", or "ERRORS" with the `ERROR` lines; kept-back and auto-removed packages are added. If the service itself failed, "JOB FAILED" with the last lines of its journal. Then whether a reboot is needed: `needrestart -b -k` (a newer kernel installed) or `/run/reboot-required` (some packages), with the reminder that the reboot is by hand. `apt.systemd.daily` runs unattended-upgrades at most once a day: if the log has no new run (`/var/lib/unattended-upgrades-report/last-run` keeps the last one reported), nothing is sent.
+- After `apt-daily.service` (`update`): a message only if the package lists could not be downloaded. Without new lists, unattended-upgrades would report "nothing to install" while security updates exist.
+
+The script was tested with sample logs in unattended-upgrades 2.12's format (Debian 13): packages upgraded with a newer kernel, nothing to install, errors with `/run/reboot-required`, the same run twice, the service failed, the list download failed and succeeded.
 
 **Configure needrestart to restart services after upgrades**
 `$nrconf{restart} = 'a'` makes needrestart restart affected services automatically. The Debian default is interactive mode, which does nothing in a non-interactive upgrade. It does not reboot for the kernel: that is handled by `update_os`.
@@ -924,8 +932,8 @@ Two independent signals:
 - `needrestart -b -k` prints `NEEDRESTART-KSTA`: `1` = running the newest installed kernel, `2` or `3` = a newer one is installed and waiting for a reboot. On Debian this is the reliable check: `/run/reboot-required` is not created consistently for kernel upgrades, as it is on Ubuntu.
 - `/run/reboot-required`, which some packages create.
 
-**Decide whether to reboot** / **Report a pending reboot that is not allowed** / **Reboot the server**
-Reboots if either signal says so and `update_os_allow_reboot` is true. Otherwise it prints a message and changes nothing.
+**Decide whether to reboot** / **Report a pending reboot that is not allowed** / **Send the pending reboot to Telegram** / **Reboot the server**
+Reboots if either signal says so and `update_os_allow_reboot` is true. Otherwise it prints a message in the job output, sends "🔁 UPDATE-OS: REBOOT REQUIRED" to Telegram, and changes nothing. On prod-srv-01 it is false (`main.yml`): the disk is encrypted and the passphrase is typed at the console at every boot.
 
 **Look up the Docker service user** / **Restart the rootless Docker daemon after a Docker upgrade**
 If `docker-ce` changed and there was no reboot, it restarts the rootless daemon: the new binary takes effect only on restart. Containers come back through their restart policy. It is skipped if the user does not exist (Docker not yet configured).
@@ -950,6 +958,8 @@ Container images are **not** updated here: they follow the `update-containers` t
 | `/etc/systemd/timesyncd.conf.d/10-local.conf` | base | NTP servers |
 | `/etc/systemd/journald.conf.d/10-size.conf` | base | Journal size |
 | `/etc/apt/apt.conf.d/52unattended-upgrades-local` | base | Security origins only |
+| `/usr/local/sbin/unattended-upgrades-report`, `/etc/systemd/system/apt-daily{,-upgrade}.service.d/50-telegram.conf` | base | Telegram report after each apt job |
+| `/var/lib/unattended-upgrades-report/last-run` | base | Last unattended-upgrades run reported |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | base | Daily automatic updates |
 | `/etc/needrestart/conf.d/50-ansible.conf` | base | Automatic service restarts |
 | `/etc/sudoers.d/90-admin` | hardening | sudo for the admin |
@@ -1001,7 +1011,8 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **`ip_unprivileged_port_start=80`** applies to every user, not just `svc-docker`.
 - **`kernel.unprivileged_bpf_disabled=1`** cannot be undone without a reboot.
 - **The admin's sudo is passwordless**: whoever has the admin's SSH key, or Semaphore's, is root. Protect both keys accordingly (see the open point on Semaphore in the project document).
-- **The network role reboots** whenever the configuration changes. Run it in a maintenance window.
+- **The network role reboots** whenever the configuration changes. Run it in a maintenance window, **at the console**: the disk is encrypted, so the server waits for the passphrase after the reboot, and Ansible's 240 s wait to reconnect (and the 5-minute rollback, which starts only once the system is up) assume someone types it promptly. The same applies to the automatic rollback reboot.
+- **The encrypted disk means no unattended reboot.** After a power cut the server stays at the passphrase prompt until someone types it: services, backups and notifications stop meanwhile. `update_os_allow_reboot` is false for this reason. Remote unlock (dropbear in the initramfs, or Clevis/Tang) is possible but not set up.
 - **`/etc/resolv.conf`** is written only by the network role. Before you run it, the server keeps the DNS servers set by the installer.
 - **The Docker key checksum** is pinned. If Docker ever rotates its key, the task fails on purpose: check the new fingerprint on docs.docker.com, then update `docker_apt_key_checksum`.
 - **The integrity check and YARA run on the server they watch.** An attacker with root can stop the timers or edit the scripts. What they add is early warning against tooling that does not expect them, and a trail: a sudden silence (no daily ClamAV message, or an integrity alert followed by nothing) is a signal too. Logs leave the server only once remote logging exists.

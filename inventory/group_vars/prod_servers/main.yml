@@ -69,6 +69,11 @@ traefik_networks:
 # --- Immich ---------------------------------------------------------------------
 immich_db_password: "{{ vault_immich_db_password | default('') }}"
 
+# --- Updates ----------------------------------------------------------------------
+# The disk is encrypted (LUKS) and the passphrase is typed at the console at
+# every boot: the update-os job never reboots, it reports on Telegram instead.
+update_os_allow_reboot: false
+
 # --- Backup (restic) -----------------------------------------------------------
 # Copy 1: USB disk formatted with this filesystem label (see the README).
 backup_usb_label: "backup-usb"

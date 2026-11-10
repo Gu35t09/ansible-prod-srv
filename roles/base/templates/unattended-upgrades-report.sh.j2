@@ -1,0 +1,140 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Telegram report of the daily package jobs, run by systemd after each one
+# (ExecStopPost in the apt-daily*.service drop-ins), whatever its result.
+#   unattended-upgrades-report upgrade   after apt-daily-upgrade.service: one
+#       message per unattended-upgrades run (installed, nothing, errors) and
+#       whether a reboot is needed
+#   unattended-upgrades-report update    after apt-daily.service: a message
+#       only if the package lists could not be downloaded
+# systemd sets SERVICE_RESULT, EXIT_CODE and EXIT_STATUS for ExecStopPost.
+# The server never reboots by itself: the disk is encrypted and its passphrase
+# is typed at the console, so the reboot is left to the administrator.
+set -u
+export LC_ALL=C
+
+MODE=${1:-upgrade}
+LOG=/var/log/unattended-upgrades/unattended-upgrades.log
+STATE_DIR=/var/lib/unattended-upgrades-report
+STATE_FILE=$STATE_DIR/last-run
+HOST=$(hostname)
+RESULT=${SERVICE_RESULT:-unknown}
+
+send() {
+    if [ -x /usr/local/sbin/notify-telegram ]; then
+        /usr/local/sbin/notify-telegram "$1" || echo "unattended-upgrades-report: Telegram message not sent" >&2
+    else
+        echo "unattended-upgrades-report: notify-telegram missing" >&2
+    fi
+    printf '%s\n' "$1"
+}
+
+unit_log() {
+    journalctl -u "$1" -n 15 --no-pager -o cat 2>/dev/null | tail -n 15
+}
+
+# Reboot needed? needrestart -b -k: NEEDRESTART-KSTA 1 = running the newest
+# installed kernel, 2/3 = a newer one is waiting. Some packages also create
+# /run/reboot-required.
+reboot_note() {
+    local ksta kcur kexp note=""
+    if command -v needrestart >/dev/null 2>&1; then
+        local out
+        out=$(needrestart -b -k 2>/dev/null)
+        ksta=$(sed -n 's/^NEEDRESTART-KSTA: //p' <<<"$out")
+        kcur=$(sed -n 's/^NEEDRESTART-KCUR: //p' <<<"$out")
+        kexp=$(sed -n 's/^NEEDRESTART-KEXP: //p' <<<"$out")
+        if [ -n "$ksta" ] && [ "$ksta" -gt 1 ]; then
+            note="a newer kernel is installed (running ${kcur:-?}, installed ${kexp:-?})"
+        fi
+    fi
+    if [ -f /run/reboot-required ]; then
+        local pkgs
+        pkgs=$(sort -u /run/reboot-required.pkgs 2>/dev/null | tr '\n' ' ')
+        note="${note:+$note; }a package asked for it${pkgs:+ (${pkgs% })}"
+    fi
+    if [ -n "$note" ]; then
+        printf '\n\n🔁 REBOOT REQUIRED: %s.\nThe disk is encrypted: reboot by hand when you can type the passphrase (sudo reboot).' "$note"
+    fi
+}
+
+if [ "$MODE" = "update" ]; then
+    [ "$RESULT" = "success" ] && exit 0
+    send "❌ APT: PACKAGE LISTS NOT UPDATED
+
+🖥️ Server: ${HOST}
+
+apt-daily.service ended with: ${RESULT} (${EXIT_STATUS:-?}). Security updates cannot be installed until the lists download again; check that deb.debian.org and security.debian.org are reachable.
+
+$(unit_log apt-daily.service)
+
+Details: journalctl -u apt-daily.service"
+    exit 0
+fi
+
+# The last unattended-upgrades run: from its last "Starting" line to the end.
+block=$(awk '/ Starting unattended upgrades script$/ { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null)
+start=$(head -n 1 <<<"$block")
+
+if [ "$RESULT" != "success" ]; then
+    send "❌ UNATTENDED-UPGRADES: JOB FAILED
+
+🖥️ Server: ${HOST}
+
+apt-daily-upgrade.service ended with: ${RESULT} (${EXIT_STATUS:-?}).
+
+$(unit_log apt-daily-upgrade.service)
+
+Details: journalctl -u apt-daily-upgrade.service and ${LOG}$(reboot_note)"
+    exit 0
+fi
+
+# apt.systemd.daily runs unattended-upgrades only once per day: a second
+# start of the service the same day leaves the log as it was. Nothing to say.
+mkdir -p "$STATE_DIR"
+if [ -z "$start" ] || [ "$start" = "$(cat "$STATE_FILE" 2>/dev/null)" ]; then
+    echo "unattended-upgrades did not run this time: no report."
+    exit 0
+fi
+printf '%s\n' "$start" > "$STATE_FILE"
+
+errors=$(grep -E '^[0-9-]+ [0-9:,]+ ERROR ' <<<"$block" | cut -d' ' -f4- | head -n 10)
+upgraded=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that will be upgraded: //p' <<<"$block" | tr ' ' '\n' | sed '/^$/d')
+kept=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that are kept back: //p' <<<"$block")
+removed=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that were successfully auto-removed: //p' <<<"$block")
+count=$(grep -c . <<<"$upgraded")
+
+if [ -n "$errors" ]; then
+    title="❌ UNATTENDED-UPGRADES: ERRORS"
+    body="• ${errors//$'\n'/$'\n'• }"
+    if [ "$count" -gt 0 ]; then
+        body="${body}
+
+Packages it tried to upgrade: $(paste -sd' ' <<<"$upgraded")"
+    fi
+    body="${body}
+
+Details: ${LOG} and /var/log/unattended-upgrades/unattended-upgrades-dpkg.log"
+elif [ "$count" -gt 0 ]; then
+    title="✅ UNATTENDED-UPGRADES: ${count} PACKAGE(S) UPGRADED"
+    body="• ${upgraded//$'\n'/$'\n'• }"
+elif grep -q 'No packages found that can be upgraded unattended' <<<"$block"; then
+    title="✅ UNATTENDED-UPGRADES: NOTHING TO INSTALL"
+    body="No security update is waiting."
+else
+    title="⚠️ UNATTENDED-UPGRADES: UNEXPECTED RESULT"
+    body="The run neither installed packages nor reported that there was nothing to do. Last lines:
+$(tail -n 5 <<<"$block" | cut -d' ' -f3-)"
+fi
+[ -n "$kept" ] && body="${body}
+
+Kept back: ${kept}"
+[ -n "$removed" ] && body="${body}
+
+Removed (unused): ${removed}"
+
+send "${title}
+
+🖥️ Server: ${HOST}
+
+${body}$(reboot_note)"

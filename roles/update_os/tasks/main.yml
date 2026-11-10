@@ -55,6 +55,20 @@
     msg: "A reboot is required, but update_os_allow_reboot is false: reboot the server manually."
   when: update_os_needs_reboot | bool and not update_os_allow_reboot | bool
 
+- name: Send the pending reboot to Telegram
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/notify-telegram
+      - |-
+        🔁 UPDATE-OS: REBOOT REQUIRED
+
+        🖥️ Server: {{ ansible_facts['hostname'] }}
+
+        The upgrade installed a newer kernel, or a package asked for a reboot. update_os_allow_reboot is false (the disk is encrypted): reboot by hand when you can type the passphrase (sudo reboot).
+  when: update_os_needs_reboot | bool and not update_os_allow_reboot | bool
+  changed_when: false
+  failed_when: false
+
 - name: Reboot the server
   ansible.builtin.reboot:
     msg: "Rebooting after package upgrades (Ansible update-os)"
