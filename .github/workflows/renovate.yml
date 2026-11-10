@@ -3,7 +3,8 @@
 # and no personal token is stored anywhere: it uses the job's own GITHUB_TOKEN,
 # which expires when the job ends. The repository setting "Allow GitHub
 # Actions to create and approve pull requests" must be on.
-# Afterwards a Telegram message lists the new PRs, or reports a failed run.
+# Afterwards a Telegram message lists the new PRs and the updates to do by
+# hand (Pending Approval in the Dependency Dashboard), or reports a failed run.
 name: Renovate
 
 on:
@@ -29,8 +30,9 @@ jobs:
       - name: Note the start time
         run: echo "RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
-      # Major tag: GITHUB_TOKEN cannot edit workflow files, so Renovate cannot
-      # update this line; minor and patch releases arrive through the tag.
+      # Major tag: GITHUB_TOKEN cannot edit workflow files, so Renovate only
+      # lists a new major in the Dependency Dashboard (and the Telegram
+      # message); change it here by hand. Minor releases arrive through the tag.
       - name: Run Renovate
         id: renovate
         uses: renovatebot/github-action@v46
@@ -71,12 +73,32 @@ jobs:
           open=$(jq '[.[] | select(.headRefName | startswith("renovate/"))] | length' <<<"$prs")
           new=$(jq -r --arg since "$RUN_START" \
             '.[] | select(.headRefName | startswith("renovate/")) | select(.createdAt >= $since) | "• \(.title)\n  \(.url)"' <<<"$prs")
-          if [ -z "$new" ]; then
-            echo "No new PRs ($open open)."
+          # Updates Renovate only lists (Postgres majors, GitHub Actions):
+          # the "Pending Approval" section of the Dependency Dashboard issue.
+          dashboard=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 20 \
+            --json title,body --jq '.[] | select(.title == "Dependency Dashboard") | .body' | tr -d '\r')
+          pending=$(awk '/^## /{inside = ($0 == "## Pending Approval")} inside && /approve-branch=/' <<<"$dashboard" \
+            | sed -e 's/.*-->//' -e 's/^/• /')
+          if [ -z "$new" ] && [ -z "$pending" ]; then
+            echo "No new PRs and nothing to do by hand ($open open)."
             exit 0
           fi
-          send "🔄 RENOVATE: new update PRs (${GITHUB_REPOSITORY})
+          msg="🔄 RENOVATE (${GITHUB_REPOSITORY})"
+          if [ -n "$new" ]; then
+            msg="${msg}
 
+          New update PRs:
           ${new}
 
-          Open Renovate PRs: ${open}. Read the release notes, merge, then run --tags update-containers."
+          Read the release notes, merge, then run --tags update-containers."
+          fi
+          if [ -n "$pending" ]; then
+            msg="${msg}
+
+          🛠️ Updates to do by hand (Dependency Dashboard, do not tick the box):
+          ${pending}"
+          fi
+          msg="${msg}
+
+          Open Renovate PRs: ${open}."
+          send "$msg"

@@ -867,26 +867,29 @@ sudo /etc/backup/pre.d/immich && sudo ls -l /srv/docker/app/immich/dump/
 Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Two files, no role: Renovate does not run on the server.
 
 **`.github/workflows/renovate.yml`**
-A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workflow*). It runs Renovate through `renovatebot/github-action`, which starts the open source `ghcr.io/renovatebot/renovate` image on a GitHub runner, then sends a Telegram message with the new PRs. Nothing is sent when there are none; a failed run sends "❌ RENOVATE FAILED" with the link to its log.
+A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workflow*). It runs Renovate through `renovatebot/github-action`, which starts the open source `ghcr.io/renovatebot/renovate` image on a GitHub runner, then sends a Telegram message with the new PRs and the updates to do by hand (the "Pending Approval" section of the Dependency Dashboard issue). Nothing is sent when there is neither; a failed run sends "❌ RENOVATE FAILED" with the link to its log. The updates to do by hand are repeated every Saturday until they are done.
 
 - **Token**: the job's own `GITHUB_TOKEN`, with the permissions listed in the workflow (contents, pull requests, issues: write). It is created for the run and expires with it; there is no personal token to store or renew. The repository must allow Actions to create pull requests (README, "Image updates").
 - **Telegram**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets. Secrets are not given to workflows started from forks.
 - **60 days without activity**: in a public repository GitHub disables scheduled workflows after 60 days with no commits, and says so by e-mail. Merging Renovate's PRs counts as activity; if it happens, re-enable the workflow under *Actions → Renovate*.
-- **The action is pinned to its major tag** (`@v46`) and the Renovate image follows its default major (44). A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot propose updates to the workflow itself: a new major of the action is a manual change, about once a year.
+- **The action is pinned to its major tag** (`@v46`) and the Renovate image follows its default major (44). A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot open PRs for the workflow itself: it lists a new major of the action (or of the `runs-on` runner image) under Pending Approval, and the change is made by hand, about once a year.
 
 **`renovate.json`**
 
 | Setting | Why |
 | --- | --- |
-| `enabledManagers: ["custom.regex"]` | Only the container images. The collections in `requirements.yml` use open ranges and need no PRs. |
+| `enabledManagers: ["custom.regex", "github-actions"]` | The container images, and the actions and runner of the workflow. The collections in `requirements.yml` use open ranges and need no PRs. |
 | Custom regex manager on `roles/*/defaults/main.yml` | Finds every `<name>_image: "<image>:<tag>@<digest>"` line and updates tag and digest together. A new image added to a role in the same form is picked up with no change here. |
 | `minimumReleaseAge: 3 days` | A release must be 3 days old before Renovate proposes it: broken releases are usually replaced by then. |
 | `minimumReleaseAgeBehaviour: timestamp-optional` | ghcr.io gives no release date. With the default, Immich updates would be held forever; with this, they are proposed without the wait. |
 | Group "Immich" | Immich server and Valkey in one PR. |
-| Immich's Postgres: tag updates off | Its tag follows the Immich release's `docker-compose.yml`, and a major upgrade needs a dump and restore. Digest updates of the same tag are still proposed. |
+| Postgres majors: `dependencyDashboardApproval` | Any image with `postgres` in its name. A major is listed under Pending Approval and in the Telegram message, never opened as a PR: Immich's tag follows the Immich release's `docker-compose.yml`, and every major needs a dump and restore. Digest updates of the same tag are normal PRs. |
+| GitHub Actions: `dependencyDashboardApproval` | Listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
 | `config:recommended` | Separate PRs for major updates, the Dependency Dashboard issue, and the `renovate` label. |
 
-Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles, and would open three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16), not the Postgres major.
+Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles and the workflow's action and runner, and computes three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16) plus two approval items (Postgres 16, runner `ubuntu-26.04`). The local dry run stops before the approval step: the Dependency Dashboard of the first run on GitHub confirms that the last two are listed, not opened.
+
+**Do not tick the boxes under Pending Approval.** Ticking asks Renovate to open the PR: for the workflow it fails (no permission), for Postgres it would invite merging an upgrade that needs a dump and restore. Do them by hand (maintenance guide, "Image updates").
 
 Applying an update is the maintenance guide's "Image updates".
 

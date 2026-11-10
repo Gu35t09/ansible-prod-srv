@@ -349,7 +349,10 @@ Renovate opens the PRs every Saturday; nothing changes on the server until you m
 
 To roll back, revert the merge commit and run `--tags update-containers` again. Databases are the exception: an application that migrated its database on start may not run on the old version any more; restore the dump from before the update instead (see the restore procedures above).
 
-Immich's Postgres image is left out on purpose (`renovate.json`): its tag follows the `docker-compose.yml` of the Immich release, and a Postgres major upgrade needs a dump and restore. Change it by hand when the Immich release notes say so.
+**Updates to do by hand** (the "🛠️" part of the Telegram message, "Pending Approval" in the Dependency Dashboard). Do not tick their boxes:
+
+- **A Postgres major** (e.g. Immich's `16-vectorchord…`): only when the Immich release notes, or its `docker-compose.yml`, move to it. Then: dump, change `immich_postgres_image`, start with an empty `postgres/`, restore the dump (as in "Restore Immich"). Otherwise ignore it: it stays listed.
+- **`renovatebot/github-action` or the `runs-on` runner**: change the version in `.github/workflows/renovate.yml` with a normal PR, then *Run workflow* once to check it.
 
 The Dependency Dashboard issue in the repository lists every pending update, including the ones not opened as PRs.
 
