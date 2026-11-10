@@ -147,6 +147,7 @@ A handler is a task that runs only when another task reports "changed" and names
 | `host_key_checking = True` | Ansible refuses a server whose SSH host key changed. On a reinstall, remove the old key from `~/.ssh/known_hosts` on purpose. |
 | `interpreter_python = auto_silent` | Uses the server's Python 3 without the discovery warning. |
 | `callback_result_format = yaml` | Output in YAML, easier to read than JSON. |
+| `force_handlers = True` | The notified handlers (service restarts) run even when a later task fails. Without it, a failed run leaves new configuration on disk that the running service never loads, and later runs do not notify again because the file no longer changes. It happened on the first deployment: timesyncd kept Debian's public NTP pool instead of OPNsense. |
 | `become = True`, `become_method = sudo` | Every task runs as root through sudo, unless a task says otherwise. |
 | `pipelining = True` | Ansible sends modules over the SSH connection instead of copying temporary files. It is faster and avoids permission problems when becoming an unprivileged user (`svc-docker`). It requires that sudo does not demand a TTY, which is the Debian default. |
 
