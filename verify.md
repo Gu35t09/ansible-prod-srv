@@ -284,3 +284,37 @@ By hand, in the web app or the mobile app:
 - **No machine learning**: *Administration → Settings → Machine Learning Settings* shows it turned off, and *Administration → Jobs* has no face detection or smart search running.
 
 A second `--tags immich` run reports `changed=0`.
+
+## 17. OpenCloud
+
+On the server:
+
+```bash
+docker-svc ps --filter name=opencloud --format '{{.Names}} {{.Status}}'          # Up ... (healthy)
+docker-svc inspect opencloud --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'   # proxy-opencloud only
+docker-svc inspect opencloud --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.Config.User}}'   # true [ALL] 0:0
+docker-svc exec opencloud curl -s https://cloud.greyroom.net/.well-known/openid-configuration | grep -o '"issuer":"[^"]*"'   # through the Traefik alias
+docker-svc exec opencloud curl -s -m 5 -o /dev/null https://github.com; echo "exit code $?"   # not 0: no Internet access
+docker-svc logs --since 10m opencloud 2>&1 | grep -c '"level":"error"'           # 0 in normal operation
+ls /etc/backup/pre.d/opencloud /etc/backup/post.d/opencloud
+```
+
+Backup hooks (OpenCloud is down for a few seconds):
+
+```bash
+sudo /etc/backup/pre.d/opencloud && docker-svc ps -a --filter name=opencloud --format '{{.Status}}'   # Exited
+sudo /etc/backup/post.d/opencloud && sleep 60 && docker-svc ps --filter name=opencloud --format '{{.Status}}'   # Up ... (healthy)
+```
+
+After the nightly backup, the Telegram message has "✅ Post-backup scripts: OK".
+
+From a client that resolves `cloud.greyroom.net` to the services address:
+
+```bash
+curl -s https://cloud.greyroom.net/status.php; echo                      # "installed":true, the version
+curl -sI https://cloud.greyroom.net/ | grep -i strict-transport           # HSTS
+```
+
+By hand: log in in the browser as a user (the login goes through OpenCloud's own login page), upload a large file over WireGuard (one that takes more than a minute), and log in with the desktop app. A login that fails right after the password page, with "invalid token" errors in `docker-svc logs opencloud`, means OpenCloud cannot reach `https://cloud.greyroom.net` from inside: check `traefik_network_aliases` and run `--tags traefik`.
+
+A second `--tags opencloud` run reports `changed=0`.

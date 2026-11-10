@@ -1,0 +1,59 @@
+# {{ ansible_managed }}
+# Based on opencloud-eu/opencloud-compose, without its Traefik, Collabora and
+# the other optional parts.
+name: opencloud
+
+services:
+  opencloud:
+    image: {{ opencloud_image }}
+    container_name: opencloud
+    restart: unless-stopped
+    # Root inside the container is svc-docker on the host, which owns the
+    # data: PosixFS needs every file owned by the user OpenCloud runs as.
+    user: "0:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # init writes /etc/opencloud/opencloud.yaml with random secrets at the
+    # first start and fails harmlessly afterwards. exec: OpenCloud gets the
+    # stop signal itself and shuts down cleanly.
+    entrypoint: ["/bin/sh", "-c", "opencloud init || true; exec opencloud server"]
+    environment:
+      OC_URL: "https://{{ opencloud_host }}"
+      # Plain HTTP between Traefik and OpenCloud; Traefik terminates TLS.
+      PROXY_TLS: "false"
+      # The login checks call OC_URL, which is Traefik (alias on this
+      # network) with the real certificate: no need to skip verification.
+      OC_INSECURE: "false"
+      PROXY_ENABLE_BASIC_AUTH: "false"
+      IDM_CREATE_DEMO_USERS: "false"
+      # No Internet access: no update check.
+      FRONTEND_CHECK_FOR_UPDATES: "false"
+      OC_DEFAULT_LANGUAGE: "{{ opencloud_default_language }}"
+      OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: "true"
+      OC_LOG_LEVEL: info
+    # IDM_ADMIN_PASSWORD, read at the first start only.
+    env_file:
+      - ./secrets/admin.env
+    volumes:
+      - ./config:/etc/opencloud
+      - ./data:/var/lib/opencloud
+    tmpfs:
+      - /tmp
+    # Only the internal network shared with Traefik: no published ports, no
+    # route to the Internet, no other service.
+    networks:
+      - proxy-opencloud
+    stop_grace_period: {{ opencloud_stop_timeout | int }}s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:9200/status.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+networks:
+  proxy-opencloud:
+    external: true

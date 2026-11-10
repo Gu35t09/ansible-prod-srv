@@ -1,0 +1,19 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Run by the backup before each run (/etc/backup/pre.d): stops OpenCloud, so
+# that its files and metadata are copied in a consistent state (OpenCloud's
+# backup guide). /etc/backup/post.d/opencloud starts it again, but only if
+# this script stopped it: a container stopped by hand stays stopped.
+set -euo pipefail
+
+MARK=/run/backup-stopped-opencloud
+rm -f "$MARK"
+
+if [ "$(/usr/local/bin/docker-svc inspect --format '{{ '{{' }}.State.Running{{ '}}' }}' opencloud 2>/dev/null)" != "true" ]; then
+    echo "opencloud: not running, nothing to stop."
+    exit 0
+fi
+
+/usr/local/bin/docker-svc stop --time {{ opencloud_stop_timeout | int }} opencloud >/dev/null
+touch "$MARK"
+echo "opencloud: stopped for the backup."
