@@ -885,6 +885,7 @@ A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workf
 | Group "Immich" | Immich server and Valkey in one PR. |
 | Postgres majors: `dependencyDashboardApproval` | Any image with `postgres` in its name. A major is listed under Pending Approval and in the Telegram message, never opened as a PR: Immich's tag follows the Immich release's `docker-compose.yml`, and every major needs a dump and restore. Digest updates of the same tag are normal PRs. |
 | GitHub Actions: `dependencyDashboardApproval` | Listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
+| `automerge: false` | Written out although it is the default: nothing is ever merged by Renovate. The `protect main` ruleset (README, "Image updates") makes GitHub refuse it anyway. |
 | `config:recommended` | Separate PRs for major updates, the Dependency Dashboard issue, and the `renovate` label. |
 
 Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles and the workflow's action and runner, and computes three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16) plus two approval items (Postgres 16, runner `ubuntu-26.04`). The local dry run stops before the approval step: the Dependency Dashboard of the first run on GitHub confirms that the last two are listed, not opened.

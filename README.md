@@ -213,8 +213,9 @@ ansible-playbook site.yml --tags update-containers --ask-vault-pass
 Setup, once, in the GitHub repository settings:
 
 1. *Settings → Actions → General → Workflow permissions*: tick **Allow GitHub Actions to create and approve pull requests**. Renovate uses the job's own `GITHUB_TOKEN`, so no personal token is needed.
-2. *Settings → Secrets and variables → Actions*: add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (the same values as in the vault). Without them the run works but sends nothing.
-3. *Actions → Renovate → Run workflow* to try it without waiting for Saturday.
+1. *Settings → Rules → Rulesets → New branch ruleset*, so that only you can change `main` (merges included): name `protect main`, enforcement **Active**, bypass list **Repository admin**, target **default branch**, rules **Restrict updates**, **Restrict deletions**, **Block force pushes**. The workflow token can push branches (`contents: write`), which would technically be enough to merge; with this ruleset GitHub refuses it. When you merge, tick "Merge without waiting for requirements to be met (bypass rules)".
+1. *Settings → Secrets and variables → Actions*: add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (the same values as in the vault). Without them the run works but sends nothing.
+1. *Actions → Renovate → Run workflow* to try it without waiting for Saturday.
 
 ## Outbound access needed
 

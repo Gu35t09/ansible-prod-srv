@@ -4,6 +4,7 @@
   "extends": [
     "config:recommended"
   ],
+  "automerge": false,
   "timezone": "Europe/Rome",
   "labels": [
     "renovate"
