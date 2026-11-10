@@ -44,7 +44,7 @@ Nothing in this list reboots the server or updates container images. Those happe
 ### Every week
 
 - The scheduled `update-os` job runs in Semaphore. Check that it ended green; if it failed, see [update-os failed](#update-os-failed).
-- Saturday morning: if the Telegram message "🔄 RENOVATE" arrived, review the PRs (see [Image updates](#image-updates)). A "❌ RENOVATE FAILED" message links to the run log.
+- Saturday morning: if the Telegram message "🔄 RENOVATE" arrived, review the PRs (see [Image updates](#image-updates)). A "❌ RENOVATE DID NOT FINISH" message gives Renovate's result and links to the run log; run it again with *Actions → Renovate → Run workflow* once the cause is fixed (a temporary error such as `repository-changed` usually needs nothing).
 
 ### Every month
 
@@ -352,7 +352,9 @@ To roll back, revert the merge commit and run `--tags update-containers` again. 
 **Updates to do by hand** (the "🛠️" part of the Telegram message, "Pending Approval" in the Dependency Dashboard). Do not tick their boxes:
 
 - **A Postgres major** (e.g. Immich's `16-vectorchord…`): only when the Immich release notes, or its `docker-compose.yml`, move to it. Then: dump, change `immich_postgres_image`, start with an empty `postgres/`, restore the dump (as in "Restore Immich"). Otherwise ignore it: it stays listed.
-- **`renovatebot/github-action` or the `runs-on` runner**: change the version in `.github/workflows/renovate.yml` with a normal PR, then *Run workflow* once to check it.
+- **The `runs-on` runner** (e.g. `ubuntu-26.04`): change it in `.github/workflows/renovate.yml` with a normal PR, then *Run workflow* once to check it.
+
+A new major of Renovate itself (`.github/renovate-image`) is a normal PR: read its release notes for breaking configuration changes, merge, then *Run workflow* to check it.
 
 The Dependency Dashboard issue in the repository lists every pending update, including the ones not opened as PRs.
 

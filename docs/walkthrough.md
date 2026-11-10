@@ -864,33 +864,42 @@ sudo /etc/backup/pre.d/immich && sudo ls -l /srv/docker/app/immich/dump/
 
 ## 18. Renovate (image updates)
 
-Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Two files, no role: Renovate does not run on the server.
+Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Three files, no role: Renovate does not run on the server.
 
 **`.github/workflows/renovate.yml`**
-A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workflow*). It runs Renovate through `renovatebot/github-action`, which starts the open source `ghcr.io/renovatebot/renovate` image on a GitHub runner, then sends a Telegram message with the new PRs and the updates to do by hand (the "Pending Approval" section of the Dependency Dashboard issue). Nothing is sent when there is neither; a failed run sends "❌ RENOVATE FAILED" with the link to its log. The updates to do by hand are repeated every Saturday until they are done.
+A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workflow*), with no third-party action. Two steps:
+
+1. **Run Renovate**: reads the image from `.github/renovate-image` (at the commit the run started from; anything but `ghcr.io/renovatebot/renovate:*` stops the run) and starts it with `docker run`. The token goes in by name (`--env RENOVATE_TOKEN`), not on the command line. Renovate logs JSON (`LOG_FORMAT=json`): the output is saved for the next step and shown in the job log one line per message (time, level, message, branch, PR title, result). `RENOVATE_EXIT_CODE_FOR_ERRORS` (experimental) makes the container exit non-zero when the run does not end in `done`, so the job turns red and GitHub e-mails it.
+2. **Notify Telegram**: reads Renovate's own verdict, the `result` of the "Repository finished" line. Anything but `done` sends "❌ RENOVATE DID NOT FINISH" with the result, up to five logged errors and the link to the run. A finished run sends "🔄 RENOVATE" with the new PRs, the updates to do by hand (the "Pending Approval" section of the Dependency Dashboard issue) and any errors logged; nothing is sent when there is none of these. The updates to do by hand are repeated every Saturday until they are done.
+
+Before this, the workflow used `renovatebot/github-action`, which runs the same `docker run`. It hid Renovate's output from the next step, and Renovate exits 0 when it stops early: a run interrupted after one branch looked successful and sent nothing.
+
+**`.github/renovate-image`**
+One line, `ghcr.io/renovatebot/renovate:44`. The major tag, not a pinned version: Renovate publishes several releases a week, and each would be a PR to merge; with the major tag every run uses the newest 44.x. A new major (45) comes as a normal PR, because this is a plain file that the workflow token may edit, unlike the workflow itself.
 
 - **Token**: the job's own `GITHUB_TOKEN`, with the permissions listed in the workflow (contents, pull requests, issues, statuses: write; statuses is for the `renovate/stability-days` check that `minimumReleaseAge` sets on each branch, and without it Renovate stops after creating the first branch). It is created for the run and expires with it; there is no personal token to store or renew. The repository must allow Actions to create pull requests (README, "Image updates").
 - **Telegram**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets. Secrets are not given to workflows started from forks.
 - **60 days without activity**: in a public repository GitHub disables scheduled workflows after 60 days with no commits, and says so by e-mail. Merging Renovate's PRs counts as activity; if it happens, re-enable the workflow under *Actions → Renovate*.
-- **The action is pinned to a commit** (`@266fef2… # v46.3.13`): it publishes no major tag such as `v46`. The Renovate image it runs follows its major (`renovate:44`), so Renovate's own fixes arrive at every run anyway. A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot open PRs for the workflow itself: it lists a new major of the action (or of the `runs-on` runner image) under Pending Approval, and the change is made by hand, about once a year. Minor and patch releases of the action are not listed.
+- **The runner image** (`runs-on: ubuntu-24.04`) is the only version left in the workflow file. A `GITHUB_TOKEN` cannot edit workflow files, so Renovate lists a new major under Pending Approval and the change is made by hand, about every two years.
 
 **`renovate.json`**
 
 | Setting | Why |
 | --- | --- |
-| `enabledManagers: ["custom.regex", "github-actions"]` | The container images, and the actions and runner of the workflow. The collections in `requirements.yml` use open ranges and need no PRs. |
+| `enabledManagers: ["custom.regex", "github-actions"]` | The container images, Renovate's own image, and the workflow's runner. The collections in `requirements.yml` use open ranges and need no PRs. |
 | Custom regex manager on `roles/*/defaults/main.yml` | Finds every `<name>_image: "<image>:<tag>@<digest>"` line and updates tag and digest together. A new image added to a role in the same form is picked up with no change here. |
+| Custom regex manager on `.github/renovate-image` | Renovate's own image, major tag only: a new major is a normal PR. |
 | `minimumReleaseAge: 3 days` | A release must be 3 days old before Renovate proposes it: broken releases are usually replaced by then. |
 | `minimumReleaseAgeBehaviour: timestamp-optional` | ghcr.io gives no release date. With the default, Immich updates would be held forever; with this, they are proposed without the wait. |
 | Group "Immich" | Immich server and Valkey in one PR. |
 | Postgres majors: `dependencyDashboardApproval` | Any image with `postgres` in its name. A major is listed under Pending Approval and in the Telegram message, never opened as a PR: Immich's tag follows the Immich release's `docker-compose.yml`, and every major needs a dump and restore. Digest updates of the same tag are normal PRs. |
-| GitHub Actions: `dependencyDashboardApproval` | Listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
+| Workflow file (`github-actions`): majors with `dependencyDashboardApproval`, the rest off | The runner image: listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
 | `automerge: false` | Written out although it is the default: nothing is ever merged by Renovate. The `protect main` ruleset (README, "Image updates") makes GitHub refuse it anyway. |
 | `config:recommended` | Separate PRs for major updates, the Dependency Dashboard issue, and the `renovate` label. |
 
-Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles and the workflow's action and runner, and computes three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16) plus two approval items (Postgres 16, runner `ubuntu-26.04`). The local dry run stops before the approval step: the Dependency Dashboard of the first run on GitHub confirms that the last two are listed, not opened.
+Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles, its own image and the workflow's runner, and computes three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16) plus two approval items (Postgres 16, runner `ubuntu-26.04`). The local dry run stops before the approval step: the first run on GitHub confirmed that the last two are listed, not opened. The Telegram step was tested with sample logs: finished with new PRs and pending items, interrupted (`repository-changed`), no log at all, finished with an error.
 
-**Do not tick the boxes under Pending Approval.** Ticking asks Renovate to open the PR: for the workflow it fails (no permission), for Postgres it would invite merging an upgrade that needs a dump and restore. Do them by hand (maintenance guide, "Image updates").
+**Do not tick the boxes under Pending Approval.** Ticking asks Renovate to open the PR: for the runner it fails (no permission), for Postgres it would invite merging an upgrade that needs a dump and restore. Do them by hand (maintenance guide, "Image updates").
 
 Applying an update is the maintenance guide's "Image updates".
 

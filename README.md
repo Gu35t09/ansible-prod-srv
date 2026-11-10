@@ -35,6 +35,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   └── update_os/                    # package upgrades and reboot (tag: update-os)
 ├── renovate.json                     # which image versions Renovate watches
 ├── .github/workflows/renovate.yml    # runs Renovate every Saturday, Telegram summary
+├── .github/renovate-image            # the Renovate image the workflow runs
 ├── scripts/update-yara-rules.sh      # refreshes the vendored YARA rules
 └── .githooks/pre-commit              # refuses an unencrypted vault.yml
 ```
@@ -204,7 +205,7 @@ Each service behind Traefik has its own internal network, `proxy-<name>`, shared
 
 ## Image updates (Renovate)
 
-Renovate runs every Saturday morning on a GitHub runner (`.github/workflows/renovate.yml`), not on the server. It reads the images pinned in `roles/*/defaults/main.yml` and opens one PR per update, with the release notes; a Telegram message lists the new PRs, or reports a failed run. Nothing is merged automatically. After merging a PR, apply it:
+Renovate runs every Saturday morning on a GitHub runner (`.github/workflows/renovate.yml`), not on the server, with no third-party action: the workflow starts the Renovate container itself. It reads the images pinned in `roles/*/defaults/main.yml` and opens one PR per update, with the release notes; a Telegram message lists the new PRs and the updates to do by hand, or reports a run that did not finish. Nothing is merged automatically. After merging a PR, apply it:
 
 ```bash
 ansible-playbook site.yml --tags update-containers --ask-vault-pass
@@ -212,7 +213,8 @@ ansible-playbook site.yml --tags update-containers --ask-vault-pass
 
 Setup, once, in the GitHub repository settings:
 
-1. *Settings → Actions → General → Workflow permissions*: tick **Allow GitHub Actions to create and approve pull requests**. Renovate uses the job's own `GITHUB_TOKEN`, so no personal token is needed.
+1. *Settings → Actions → General → Actions permissions*: **Allow Gu35t09 actions and reusable workflows** (the workflow uses no external action).
+1. *Settings → Actions → General → Workflow permissions*: **Read repository contents and packages permissions** as the default, and tick **Allow GitHub Actions to create and approve pull requests**. Renovate uses the job's own `GITHUB_TOKEN`, so no personal token is needed.
 1. *Settings → Rules → Rulesets → New branch ruleset*, so that only you can change `main` (merges included): name `protect main`, enforcement **Active**, bypass list **Repository admin**, target **default branch**, rules **Restrict updates**, **Restrict deletions**, **Block force pushes**. The workflow token can push branches (`contents: write`), which would technically be enough to merge; with this ruleset GitHub refuses it. When you merge, tick "Merge without waiting for requirements to be met (bypass rules)".
 1. *Settings → Secrets and variables → Actions*: add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (the same values as in the vault). Without them the run works but sends nothing.
 1. *Actions → Renovate → Run workflow* to try it without waiting for Saturday.
