@@ -1,0 +1,104 @@
+# Renovate (renovatebot/renovate, AGPL) on a GitHub runner: it reads
+# renovate.json and opens one PR per image update. Nothing runs on the server
+# and no personal token is stored anywhere: it uses the job's own GITHUB_TOKEN,
+# which expires when the job ends. The repository setting "Allow GitHub
+# Actions to create and approve pull requests" must be on.
+# Afterwards a Telegram message lists the new PRs and the updates to do by
+# hand (Pending Approval in the Dependency Dashboard), or reports a failed run.
+name: Renovate
+
+on:
+  schedule:
+    # Saturday 05:00 UTC (06:00 in winter, 07:00 in summer in Italy).
+    # GitHub may start scheduled runs some minutes late.
+    - cron: "0 5 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # push the update branches
+  pull-requests: write   # open and update the PRs
+  issues: write          # the Dependency Dashboard issue
+
+concurrency:
+  group: renovate
+
+jobs:
+  renovate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Note the start time
+        run: echo "RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      # Major tag: GITHUB_TOKEN cannot edit workflow files, so Renovate only
+      # lists a new major in the Dependency Dashboard (and the Telegram
+      # message); change it here by hand. Minor releases arrive through the tag.
+      - name: Run Renovate
+        id: renovate
+        uses: renovatebot/github-action@v46
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          LOG_LEVEL: info
+
+      - name: Notify Telegram
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OUTCOME: ${{ steps.renovate.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not set: no notification."
+            exit 0
+          fi
+          send() {
+            curl -sS --fail -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "disable_web_page_preview=true" \
+              --data-urlencode "text=$1"
+          }
+          if [ "$OUTCOME" != "success" ]; then
+            send "❌ RENOVATE FAILED (${GITHUB_REPOSITORY})
+
+          ${RUN_URL}"
+            exit 0
+          fi
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,title,url,headRefName,createdAt)
+          open=$(jq '[.[] | select(.headRefName | startswith("renovate/"))] | length' <<<"$prs")
+          new=$(jq -r --arg since "$RUN_START" \
+            '.[] | select(.headRefName | startswith("renovate/")) | select(.createdAt >= $since) | "• \(.title)\n  \(.url)"' <<<"$prs")
+          # Updates Renovate only lists (Postgres majors, GitHub Actions):
+          # the "Pending Approval" section of the Dependency Dashboard issue.
+          dashboard=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 20 \
+            --json title,body --jq '.[] | select(.title == "Dependency Dashboard") | .body' | tr -d '\r')
+          pending=$(awk '/^## /{inside = ($0 == "## Pending Approval")} inside && /approve-branch=/' <<<"$dashboard" \
+            | sed -e 's/.*-->//' -e 's/^/• /')
+          if [ -z "$new" ] && [ -z "$pending" ]; then
+            echo "No new PRs and nothing to do by hand ($open open)."
+            exit 0
+          fi
+          msg="🔄 RENOVATE (${GITHUB_REPOSITORY})"
+          if [ -n "$new" ]; then
+            msg="${msg}
+
+          New update PRs:
+          ${new}
+
+          Read the release notes, merge, then run --tags update-containers."
+          fi
+          if [ -n "$pending" ]; then
+            msg="${msg}
+
+          🛠️ Updates to do by hand (Dependency Dashboard, do not tick the box):
+          ${pending}"
+          fi
+          msg="${msg}
+
+          Open Renovate PRs: ${open}."
+          send "$msg"

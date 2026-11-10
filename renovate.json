@@ -1,0 +1,61 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Proposes updates to the container images pinned in the role defaults. Runs every Saturday from .github/workflows/renovate.yml; nothing is merged automatically.",
+  "extends": [
+    "config:recommended"
+  ],
+  "automerge": false,
+  "timezone": "Europe/Rome",
+  "labels": [
+    "renovate"
+  ],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "enabledManagers": [
+    "custom.regex",
+    "github-actions"
+  ],
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images in roles/<role>/defaults/main.yml: <name>_image: \"<image>:<tag>@<digest>\"",
+      "managerFilePatterns": [
+        "/^roles/[^/]+/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "_image: \"(?<depName>[^:\"@]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Immich: server and Valkey in one PR; read the release notes before merging",
+      "matchPackageNames": [
+        "ghcr.io/immich-app/immich-server",
+        "docker.io/valkey/valkey"
+      ],
+      "groupName": "Immich"
+    },
+    {
+      "description": "Postgres major versions (Immich's tag follows the Immich release; every major needs a dump and restore): listed under Pending Approval in the Dependency Dashboard and in the Telegram message, never opened as a PR. Do the upgrade by hand; do not tick the box.",
+      "matchPackageNames": [
+        "/postgres/"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "GitHub Actions in .github/workflows: the job's GITHUB_TOKEN cannot edit workflow files, so new versions are only listed under Pending Approval. Change the version in the workflow by hand; do not tick the box.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

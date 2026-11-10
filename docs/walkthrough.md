@@ -23,11 +23,12 @@ Contents:
 15. [Role: traefik](#15-role-traefik)
 16. [Role: vaultwarden](#16-role-vaultwarden)
 17. [Role: immich](#17-role-immich)
-18. [Role: update_os](#18-role-update_os)
-19. [The pre-commit hook](#19-the-pre-commit-hook)
-20. [Files the playbook creates on the server](#20-files-the-playbook-creates-on-the-server)
-21. [Known limits and points to review](#21-known-limits-and-points-to-review)
-22. [How it was tested](#22-how-it-was-tested)
+18. [Renovate (image updates)](#18-renovate-image-updates)
+19. [Role: update_os](#19-role-update_os)
+20. [The pre-commit hook](#20-the-pre-commit-hook)
+21. [Files the playbook creates on the server](#21-files-the-playbook-creates-on-the-server)
+22. [Known limits and points to review](#22-known-limits-and-points-to-review)
+23. [How it was tested](#23-how-it-was-tested)
 
 ---
 
@@ -470,7 +471,7 @@ Waits for `/run/user/<uid>/bus`, a sign that the user's systemd instance is read
 `/usr/local/bin/docker-svc` runs `docker` as `svc-docker` with the right socket. The admin has no direct access to the socket; the wrapper goes through sudo, so every use is recorded in the journal.
 
 **Create the container directories**
-`/srv/docker`, `/srv/docker/system` (infrastructure: Traefik, Renovate) and `/srv/docker/app` (applications: Vaultwarden, Immich, OpenCloud, Paperless), owned by root with group `svc-docker`, mode 0750: the service user can reach them, other users cannot. Each service role adds `<name>/` with its compose file, data and database dumps, so one directory holds everything a restore needs.
+`/srv/docker`, `/srv/docker/system` (infrastructure: Traefik) and `/srv/docker/app` (applications: Vaultwarden, Immich, OpenCloud, Paperless), owned by root with group `svc-docker`, mode 0750: the service user can reach them, other users cannot. Each service role adds `<name>/` with its compose file, data and database dumps, so one directory holds everything a restore needs.
 
 **Apply pending daemon changes before the check** (`meta: flush_handlers`)
 Runs the **Restart rootless Docker** handler now if `daemon.json` or the unit changed, so the next check sees the new configuration.
@@ -847,7 +848,7 @@ The directories above. `postgres/` is created only when missing: the Postgres en
 - **No machine learning.** The `immich-machine-learning` container needs 1.5–3 GB of RAM and downloads its models from Hugging Face. Without it there is no face grouping and no smart search; search by file name, date, place and metadata still works. Machine learning must also be turned off in the admin settings, or every upload logs errors (README, "First setup"). It can be added later: a container on the backend network plus Hugging Face on the egress list.
 - **Two networks, no Internet.** `proxy-immich` holds Traefik and the server; `backend` (`internal: true`) holds the server, Postgres and Valkey. Traefik cannot reach the database, and nothing reaches the Internet. The server would use it only for the version check (turned off in the settings) and the clients load the map tiles themselves.
 - **Hardening**: the server runs with a read-only root filesystem (only `/data` and a tmpfs `/tmp` are writable), every capability dropped, `no-new-privileges`. Postgres and Valkey start as root to fix the owner of their data, then drop to their own user: they keep only `CHOWN`, `SETUID`, `SETGID` (and `DAC_OVERRIDE`, `FOWNER` for Postgres). Valkey holds only job queues, in a tmpfs.
-- **Images**: Postgres is Immich's own build with the vector extensions, pinned as in the release's `docker-compose.yml`. Major Postgres upgrades need a dump and restore: once Renovate is in place, they go in a separate group, applied by hand (project document).
+- **Images**: Postgres is Immich's own build with the vector extensions, pinned as in the release's `docker-compose.yml`. Major Postgres upgrades need a dump and restore: Renovate leaves this image's tag alone, and it is changed by hand when the Immich release notes say so.
 - **The whole library is backed up**, thumbnails and transcoded videos included: after a restore Immich has nothing to regenerate, at the cost of 10–20% more space on the USB disk and in S3.
 - **Logs** go to the container log only (lost when the container is recreated). Requests, with the client IP, are in Traefik's access log.
 
@@ -861,7 +862,41 @@ sudo /etc/backup/pre.d/immich && sudo ls -l /srv/docker/app/immich/dump/
 
 ---
 
-## 18. Role: update_os
+## 18. Renovate (image updates)
+
+Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Two files, no role: Renovate does not run on the server.
+
+**`.github/workflows/renovate.yml`**
+A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workflow*). It runs Renovate through `renovatebot/github-action`, which starts the open source `ghcr.io/renovatebot/renovate` image on a GitHub runner, then sends a Telegram message with the new PRs and the updates to do by hand (the "Pending Approval" section of the Dependency Dashboard issue). Nothing is sent when there is neither; a failed run sends "❌ RENOVATE FAILED" with the link to its log. The updates to do by hand are repeated every Saturday until they are done.
+
+- **Token**: the job's own `GITHUB_TOKEN`, with the permissions listed in the workflow (contents, pull requests, issues: write). It is created for the run and expires with it; there is no personal token to store or renew. The repository must allow Actions to create pull requests (README, "Image updates").
+- **Telegram**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets. Secrets are not given to workflows started from forks.
+- **60 days without activity**: in a public repository GitHub disables scheduled workflows after 60 days with no commits, and says so by e-mail. Merging Renovate's PRs counts as activity; if it happens, re-enable the workflow under *Actions → Renovate*.
+- **The action is pinned to its major tag** (`@v46`) and the Renovate image follows its default major (44). A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot open PRs for the workflow itself: it lists a new major of the action (or of the `runs-on` runner image) under Pending Approval, and the change is made by hand, about once a year.
+
+**`renovate.json`**
+
+| Setting | Why |
+| --- | --- |
+| `enabledManagers: ["custom.regex", "github-actions"]` | The container images, and the actions and runner of the workflow. The collections in `requirements.yml` use open ranges and need no PRs. |
+| Custom regex manager on `roles/*/defaults/main.yml` | Finds every `<name>_image: "<image>:<tag>@<digest>"` line and updates tag and digest together. A new image added to a role in the same form is picked up with no change here. |
+| `minimumReleaseAge: 3 days` | A release must be 3 days old before Renovate proposes it: broken releases are usually replaced by then. |
+| `minimumReleaseAgeBehaviour: timestamp-optional` | ghcr.io gives no release date. With the default, Immich updates would be held forever; with this, they are proposed without the wait. |
+| Group "Immich" | Immich server and Valkey in one PR. |
+| Postgres majors: `dependencyDashboardApproval` | Any image with `postgres` in its name. A major is listed under Pending Approval and in the Telegram message, never opened as a PR: Immich's tag follows the Immich release's `docker-compose.yml`, and every major needs a dump and restore. Digest updates of the same tag are normal PRs. |
+| GitHub Actions: `dependencyDashboardApproval` | Listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
+| `automerge: false` | Written out although it is the default: nothing is ever merged by Renovate. The `protect main` ruleset (README, "Image updates") makes GitHub refuse it anyway. |
+| `config:recommended` | Separate PRs for major updates, the Dependency Dashboard issue, and the `renovate` label. |
+
+Tested with Renovate 44 in dry-run on this repository: it finds the five images of the three roles and the workflow's action and runner, and computes three PRs (Immich v3.4.0, Traefik v3.7.17, a new digest for Traefik v3.7.16) plus two approval items (Postgres 16, runner `ubuntu-26.04`). The local dry run stops before the approval step: the Dependency Dashboard of the first run on GitHub confirms that the last two are listed, not opened.
+
+**Do not tick the boxes under Pending Approval.** Ticking asks Renovate to open the PR: for the workflow it fails (no permission), for Postgres it would invite merging an upgrade that needs a dump and restore. Do them by hand (maintenance guide, "Image updates").
+
+Applying an update is the maintenance guide's "Image updates".
+
+---
+
+## 19. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -889,17 +924,17 @@ If `docker-ce` changed and there was no reboot, it restarts the rootless daemon:
 **Check that the rootless Docker daemon is running**
 After an upgrade or a reboot, waits until the user `docker.service` is active again. If it fails, the Semaphore job fails and you can see it.
 
-Container images are **not** updated here: they will follow the `update-containers` tag, with the versions pinned in the repository and Renovate.
+Container images are **not** updated here: they follow the `update-containers` tag, with the versions pinned in the repository and proposed by Renovate.
 
 ---
 
-## 19. The pre-commit hook
+## 20. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 20. Files the playbook creates on the server
+## 21. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -950,7 +985,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 21. Known limits and points to review
+## 22. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -981,7 +1016,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 22. How it was tested
+## 23. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 

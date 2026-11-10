@@ -23,7 +23,7 @@ Contents:
 
   ```text
   /srv/docker/
-  ├── system/<name>/   # infrastructure: traefik, renovate
+  ├── system/<name>/   # infrastructure: traefik
   └── app/<name>/      # applications: vaultwarden, immich, opencloud, paperless
       ├── compose.yml  # written by Ansible
       ├── data/        # the service's data (bind mounts)
@@ -74,7 +74,7 @@ The repository is the source of truth. A compose file or a configuration file ch
 | To | Do |
 | --- | --- |
 | Change a setting | Edit the role or `group_vars` in the repository, then `ansible-playbook site.yml --tags <service> --ask-vault-pass` |
-| Update an image | Change the pinned version (tag and digest) in the role's defaults (later: merge the Renovate PR), then `--tags update-containers` |
+| Update an image | Merge the Renovate PR (or change the pinned tag and digest in the role's defaults by hand), then `--tags update-containers` |
 | Add a service | Add its name to `traefik_networks` in `main.yml` and run `--tags traefik` (it creates the service's network), then deploy the service role. See the walkthrough, "Adding a service" |
 | Remove a service | Remove its role from `site.yml` and its name from `traefik_networks`, stop it (`docker-svc compose -f ... down`), run `--tags traefik`, then remove its network (`docker-svc network rm proxy-<name>`) and, once you are sure, its directory |
 
