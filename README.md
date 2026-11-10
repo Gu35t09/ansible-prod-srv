@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden and Immich are in place; OpenCloud, Paperless and Renovate come next, each as its own role. DNS stays on Unbound (OPNsense).
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden and Immich are in place, with Renovate proposing image updates; OpenCloud and Paperless come next, each as its own role. DNS stays on Unbound (OPNsense).
 
 ## Layout
 
@@ -33,6 +33,8 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── yara/                         # YARA rules and nightly scan
 │   ├── backup/                       # restic to a USB disk and an S3 bucket
 │   └── update_os/                    # package upgrades and reboot (tag: update-os)
+├── renovate.json                     # which image versions Renovate watches
+├── .github/workflows/renovate.yml    # runs Renovate every Saturday, Telegram summary
 ├── scripts/update-yara-rules.sh      # refreshes the vendored YARA rules
 └── .githooks/pre-commit              # refuses an unencrypted vault.yml
 ```
@@ -185,7 +187,7 @@ Every container service has its own directory, with its compose file, its data a
 
 ```text
 /srv/docker/
-├── system/        # infrastructure: traefik, renovate
+├── system/        # infrastructure: traefik
 │   └── <name>/
 └── app/           # applications: vaultwarden, immich, opencloud, paperless
     └── <name>/
@@ -199,6 +201,20 @@ docker-svc compose -f /srv/docker/app/<name>/compose.yml restart
 ```
 
 Each service behind Traefik has its own internal network, `proxy-<name>`, shared only with Traefik: services cannot reach each other. The full guide, with what to do by hand and what to change through Ansible, is [docs/containers.md](docs/containers.md).
+
+## Image updates (Renovate)
+
+Renovate runs every Saturday morning on a GitHub runner (`.github/workflows/renovate.yml`), not on the server. It reads the images pinned in `roles/*/defaults/main.yml` and opens one PR per update, with the release notes; a Telegram message lists the new PRs, or reports a failed run. Nothing is merged automatically. After merging a PR, apply it:
+
+```bash
+ansible-playbook site.yml --tags update-containers --ask-vault-pass
+```
+
+Setup, once, in the GitHub repository settings:
+
+1. *Settings → Actions → General → Workflow permissions*: tick **Allow GitHub Actions to create and approve pull requests**. Renovate uses the job's own `GITHUB_TOKEN`, so no personal token is needed.
+2. *Settings → Secrets and variables → Actions*: add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (the same values as in the vault). Without them the run works but sends nothing.
+3. *Actions → Renovate → Run workflow* to try it without waiting for Saturday.
 
 ## Outbound access needed
 

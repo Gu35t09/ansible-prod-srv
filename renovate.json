@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Proposes updates to the container images pinned in the role defaults. Runs every Saturday from .github/workflows/renovate.yml; nothing is merged automatically.",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Rome",
+  "labels": ["renovate"],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "enabledManagers": ["custom.regex"],
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images in roles/<role>/defaults/main.yml: <name>_image: \"<image>:<tag>@<digest>\"",
+      "managerFilePatterns": ["/^roles/[^/]+/defaults/main\\.yml$/"],
+      "matchStrings": [
+        "_image: \"(?<depName>[^:\"@]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Immich: server and Valkey in one PR; read the release notes before merging",
+      "matchPackageNames": ["ghcr.io/immich-app/immich-server", "docker.io/valkey/valkey"],
+      "groupName": "Immich"
+    },
+    {
+      "description": "Immich's Postgres follows the release's docker-compose.yml: only digest updates here, tag changes by hand",
+      "matchPackageNames": ["ghcr.io/immich-app/postgres"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false
+    }
+  ]
+}

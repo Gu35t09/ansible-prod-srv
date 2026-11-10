@@ -33,7 +33,7 @@ Contents:
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
 | Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays | Telegram at every run |
 
-Nothing in this list reboots the server or updates container images. Those happen only through the `update-os` job and, later, `update-containers`.
+Nothing in this list reboots the server or updates container images. Those happen only through the `update-os` job and `update-containers`.
 
 ## 2. Maintenance calendar
 
@@ -44,7 +44,7 @@ Nothing in this list reboots the server or updates container images. Those happe
 ### Every week
 
 - The scheduled `update-os` job runs in Semaphore. Check that it ended green; if it failed, see [update-os failed](#update-os-failed).
-- If Renovate opened PRs (once the application roles exist), read the changelogs and merge.
+- Saturday morning: if the Telegram message "🔄 RENOVATE" arrived, review the PRs (see [Image updates](#image-updates)). A "❌ RENOVATE FAILED" message links to the run log.
 
 ### Every month
 
@@ -337,6 +337,21 @@ docker-svc exec -it immich_postgres psql -U postgres -c "ALTER USER postgres PAS
 ```
 
 Then put the same value in `vault_immich_db_password` and run `--tags immich`: the server restarts with the new password.
+
+### Image updates
+
+Renovate opens the PRs every Saturday; nothing changes on the server until you merge and run the playbook.
+
+1. Open the PR and read the release notes in its description, and the project's own notes for breaking changes. **Immich**: always read them (breaking changes are frequent), and wait a few days after a release: ghcr.io gives no release date, so Renovate cannot hold back fresh Immich releases as it does for Docker Hub images (3 days).
+2. Merge.
+3. `git pull`, then `ansible-playbook site.yml --tags update-containers --ask-vault-pass`.
+4. Check: `docker-svc ps` (all healthy) and the service's checks in `verify.md`.
+
+To roll back, revert the merge commit and run `--tags update-containers` again. Databases are the exception: an application that migrated its database on start may not run on the old version any more; restore the dump from before the update instead (see the restore procedures above).
+
+Immich's Postgres image is left out on purpose (`renovate.json`): its tag follows the `docker-compose.yml` of the Immich release, and a Postgres major upgrade needs a dump and restore. Change it by hand when the Immich release notes say so.
+
+The Dependency Dashboard issue in the repository lists every pending update, including the ones not opened as PRs.
 
 ### Replace the USB disk
 
