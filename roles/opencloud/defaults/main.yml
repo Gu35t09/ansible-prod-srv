@@ -1,0 +1,24 @@
+---
+# Production release line (opencloudeu/opencloud), not rolling: OpenCloud
+# calls rolling "the wrong choice for production". Pinned by tag and digest:
+# an update is a change in this file (Renovate), applied with
+# --tags update-containers.
+opencloud_image: "docker.io/opencloudeu/opencloud:7.2.4@sha256:6d992ccc5f1cbc7b2a9b272ba25f879b1b159c2d7ed7f5527e09059f16295697"
+
+docker_user: "svc-docker"
+opencloud_dir: /srv/docker/app/opencloud
+# Traefik reads the route from this directory (written by the traefik role).
+opencloud_traefik_dynamic_dir: /srv/docker/system/traefik/dynamic
+
+opencloud_host: "cloud.{{ traefik_domain }}"
+
+# Password of the built-in "admin" account, from the vault. Read only at the
+# first start, when OpenCloud creates its user directory: changing it later
+# here changes nothing (use the web interface).
+opencloud_admin_password: ""
+
+# Language of the web interface for new users.
+opencloud_default_language: "it"
+
+# Seconds OpenCloud gets to stop cleanly (for the backup and updates).
+opencloud_stop_timeout: 60

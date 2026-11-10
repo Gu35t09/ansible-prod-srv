@@ -58,5 +58,7 @@
       tags: [vaultwarden, update-containers]
     - role: immich
       tags: [immich, update-containers]
+    - role: opencloud
+      tags: [opencloud, update-containers]
     - role: update_os
       tags: [update-os, never]

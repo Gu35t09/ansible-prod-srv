@@ -22,6 +22,10 @@ traefik_dashboard_users: []
 # reach each other through Traefik's networks. Add a name here (main.yml)
 # before deploying the service.
 traefik_networks: []
+# Host names Traefik answers to on a service's own network, per service:
+#   opencloud: ["cloud.example.org"]
+# For services that must reach their own public URL from inside.
+traefik_network_aliases: {}
 
 # Address the ports are published on. Empty: every address (before the
 # services VLAN exists).

@@ -30,10 +30,21 @@ services:
       - /tmp
     # default: outbound to Let's Encrypt and Cloudflare. proxy-<name>: one
     # internal network per service (traefik_networks).
+    # Aliases (traefik_network_aliases): host names under which a service
+    # reaches Traefik on its own network, e.g. OpenCloud calling its public
+    # URL for the login checks without any route to the Internet.
     networks:
-      - default
+      default: {}
 {% for name in traefik_networks %}
-      - proxy-{{ name }}
+{% if traefik_network_aliases[name] | default([]) | length > 0 %}
+      proxy-{{ name }}:
+        aliases:
+{% for alias in traefik_network_aliases[name] %}
+          - {{ alias }}
+{% endfor %}
+{% else %}
+      proxy-{{ name }}: {}
+{% endif %}
 {% endfor %}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]

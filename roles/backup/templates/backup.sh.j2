@@ -22,6 +22,7 @@ EXCLUDES=({% for pattern in backup_exclude %}{{ pattern | quote }}{{ ' ' if not 
 KEEP=(--keep-daily {{ backup_keep_daily | int }} --keep-weekly {{ backup_keep_weekly | int }} --keep-monthly {{ backup_keep_monthly | int }})
 MAINTENANCE_WEEKDAY={{ backup_maintenance_weekday | int }}
 PRE_DIR=/etc/backup/pre.d
+POST_DIR=/etc/backup/post.d
 HOST=$(hostname)
 # Jinja stops here: the rest is plain bash, where array lengths look like Jinja comments.
 {% raw %}
@@ -230,6 +231,18 @@ if [ "$USB_ENABLED" = true ]; then
 fi
 if [ "$S3_ENABLED" = true ]; then
     backup_to S3 "$S3_REPOSITORY"
+fi
+
+# Application hooks after both copies, whatever their result: restart the
+# services the pre-backup scripts stopped for a consistent copy.
+if [ -n "$(find "$POST_DIR" -mindepth 1 -maxdepth 1 -type f -executable 2>/dev/null)" ]; then
+    echo "Running the scripts in $POST_DIR"
+    if run-parts --report "$POST_DIR"; then
+        REPORT+=("✅ Post-backup scripts: OK")
+    else
+        REPORT+=("❌ Post-backup scripts: at least one failed, a service stopped for the backup may still be down (journalctl -u backup.service)")
+        FAILED=true
+    fi
 fi
 
 if [ "$FAILED" = true ]; then

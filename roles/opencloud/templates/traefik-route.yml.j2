@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Written by the opencloud role. The certificate, the security headers and the
+# 10-minute read timeout come from the websecure entry point.
+http:
+  routers:
+    opencloud:
+      rule: "Host(`{{ opencloud_host }}`)"
+      entryPoints:
+        - websecure
+      service: opencloud
+
+  services:
+    opencloud:
+      loadBalancer:
+        servers:
+          - url: "http://opencloud:9200"

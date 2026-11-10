@@ -23,12 +23,13 @@ Contents:
 15. [Role: traefik](#15-role-traefik)
 16. [Role: vaultwarden](#16-role-vaultwarden)
 17. [Role: immich](#17-role-immich)
-18. [Renovate (image updates)](#18-renovate-image-updates)
-19. [Role: update_os](#19-role-update_os)
-20. [The pre-commit hook](#20-the-pre-commit-hook)
-21. [Files the playbook creates on the server](#21-files-the-playbook-creates-on-the-server)
-22. [Known limits and points to review](#22-known-limits-and-points-to-review)
-23. [How it was tested](#23-how-it-was-tested)
+18. [Role: opencloud](#18-role-opencloud)
+19. [Renovate (image updates)](#19-renovate-image-updates)
+20. [Role: update_os](#20-role-update_os)
+21. [The pre-commit hook](#21-the-pre-commit-hook)
+22. [Files the playbook creates on the server](#22-files-the-playbook-creates-on-the-server)
+23. [Known limits and points to review](#23-known-limits-and-points-to-review)
+24. [How it was tested](#24-how-it-was-tested)
 
 ---
 
@@ -40,7 +41,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`, `opencloud`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
 
 The order matters:
 
@@ -60,6 +61,7 @@ The order matters:
 | `traefik`, `update-containers` | traefik |
 | `vaultwarden`, `update-containers` | vaultwarden |
 | `immich`, `update-containers` | immich |
+| `opencloud`, `update-containers` | opencloud |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
@@ -185,12 +187,14 @@ prod-srv-01 ansible_host=10.123.11.11 ansible_user=v
 | `traefik_domain`, `traefik_networks` | traefik | The domain of the wildcard certificate, and one internal network per service behind Traefik. |
 | `cloudflare_dns_api_token`, `traefik_dashboard_users` | traefik | Read from the vault. |
 | `immich_db_password` | immich | Read from the vault. |
+| `traefik_network_aliases` | traefik | Host names Traefik answers to on a service's network: `cloud.<domain>` for OpenCloud. |
+| `opencloud_admin_password` | opencloud | Read from the vault; used at the first start only. |
 | `backup_usb_label`, `backup_s3_endpoint`, `backup_s3_bucket`, `backup_exclude` | backup | The USB disk's label, the S3 bucket, and the live database directories left out (their dumps are backed up). |
 | `restic_password`, `backup_s3_access_key`, `backup_s3_secret_key` | backup | Read from the vault. |
 
 ### vault.yml
 
-It holds the secrets, all with the `vault_` prefix: the Telegram token and chat ID, the restic password, the S3 key, the Cloudflare token, the Traefik dashboard users and the Immich database password (`vault.yml.example` lists them, with how to generate each). The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
+It holds the secrets, all with the `vault_` prefix: the Telegram token and chat ID, the restic password, the S3 key, the Cloudflare token, the Traefik dashboard users, the Immich database password and OpenCloud's initial admin password (`vault.yml.example` lists them, with how to generate each). The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
 
 ---
 
@@ -683,11 +687,12 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 ### The backup script (`/usr/local/sbin/backup`)
 
-1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden` and `immich`). If one fails, the run goes on with the previous dump and the report shows a warning.
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden` and `immich`); `opencloud` adds one that stops it. If one fails, the run goes on with the previous dump and the report shows a warning.
 2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
 3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
 4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check`. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
-5. Sends **one Telegram message** per run: `✅ BACKUP OK`, `⚠️ BACKUP COMPLETED WITH WARNINGS` or `❌ BACKUP FAILED`, with one line per copy (snapshot ID, data added, files new and changed, duration). The full restic output is in the journal.
+5. After both copies, whatever their result, runs the executable scripts in `/etc/backup/post.d/`: `opencloud` starts again there. A failure here is a failure of the run (a service may still be down), reported as "❌ Post-backup scripts".
+6. Sends **one Telegram message** per run: `✅ BACKUP OK`, `⚠️ BACKUP COMPLETED WITH WARNINGS` or `❌ BACKUP FAILED`, with one line per copy (snapshot ID, data added, files new and changed, duration). The full restic output is in the journal.
 
 Exit code 1 when a copy failed, so the unit shows as failed in `systemctl --failed`.
 
@@ -747,7 +752,7 @@ For each name in `traefik_networks`, creates `proxy-<name>` with `--internal` if
 
 The `vaultwarden` role is the model for a single container, `immich` for one with a database. A new role:
 
-1. **Network**: add the name to `traefik_networks` in `main.yml` and run `--tags traefik`: it creates `proxy-<name>` and attaches Traefik to it. The role asserts the name is there.
+1. **Network**: add the name to `traefik_networks` in `main.yml` and run `--tags traefik`: it creates `proxy-<name>` and attaches Traefik to it. The role asserts the name is there. If the service must call its own public URL (OpenCloud's login checks), also add that host name to `traefik_network_aliases`.
 2. **Image**: in `defaults/main.yml`, as `<name>_image: "<image>:<tag>@sha256:<digest>"` on one line. Renovate finds images only in this form.
 3. **Compose file** (`compose.yml.j2`): the container Traefik talks to joins `proxy-<name>`; the others (the database) stay on an internal network of their own; no published ports. Read-only filesystem and no capabilities where the image allows it.
    ```yaml
@@ -763,7 +768,7 @@ The `vaultwarden` role is the model for a single container, `immich` for one wit
        internal: true
    ```
 4. **Route**: the role writes `/srv/docker/system/traefik/dynamic/<name>.yml` (template `traefik-route.yml.j2`) after the container is up, with `Host(<name>.<domain>)` to `http://<compose service>:<port>`. Traefik picks it up without a restart.
-5. **Database**: a dump script in `/etc/backup/pre.d/<name>` (no dot in the name), and the live database directory in `backup_exclude`.
+5. **Database**: a dump script in `/etc/backup/pre.d/<name>` (no dot in the name), and the live database directory in `backup_exclude`. A service that must be stopped for a consistent copy stops in `pre.d` and starts again in `/etc/backup/post.d/<name>` (see `opencloud`).
 6. **Tags** in `site.yml`: `[<name>, update-containers]`, after the other container services.
 7. **DNS**: a host override `<name>.greyroom.net` → services address in Unbound.
 8. **Docs**: a walkthrough section, the README tables, a restore procedure in the maintenance guide, checks in `verify.md`.
@@ -872,7 +877,54 @@ sudo /etc/backup/pre.d/immich && sudo ls -l /srv/docker/app/immich/dump/
 
 ---
 
-## 18. Renovate (image updates)
+## 18. Role: opencloud
+
+Purpose: file sync and share, replacing Nextcloud. It sits in `/srv/docker/app/opencloud/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | The container |
+| `config/opencloud.yaml` | The secrets and settings `opencloud init` generates at the first start |
+| `data/storage/users/users/<user id>/` | Each user's personal space: the files and folders as the user sees them |
+| `data/idm/`, `data/idp/` | The built-in user directory (LDAP) and login service (OpenID Connect) |
+| `data/search/`, `data/thumbnails/`, `data/nats/` | Search index, thumbnails, internal message bus |
+| `secrets/admin.env` | `IDM_ADMIN_PASSWORD`, read at the first start only |
+
+`config/`, `data/` and `secrets/` (0700) belong to `svc-docker`. The route is in `/srv/docker/system/traefik/dynamic/opencloud.yml`, the backup hooks in `/etc/backup/pre.d/opencloud` and `/etc/backup/post.d/opencloud`.
+
+**Check the OpenCloud settings** / **Look up the Docker service user** / **Check that rootless Docker is configured** / **Check that Traefik is configured** / **Stop if Traefik is missing**
+Stops if `traefik_domain` is empty, if `opencloud` is not in `traefik_networks` or its alias is missing from `traefik_network_aliases`, if the admin password is shorter than 16 characters, or if Docker or Traefik are not set up yet.
+
+**Create the OpenCloud directories** / **Write the initial admin password**
+The directories above and `secrets/admin.env` (0600). OpenCloud reads the password only when it creates its user directory, at the first start: a new value in the vault later changes nothing (change it in the web interface).
+
+**Install the backup hooks**
+`pre.d/opencloud` stops the container (up to `opencloud_stop_timeout`, 60 s) and leaves a mark in `/run`; `post.d/opencloud` starts it again only if that mark is there, so a container stopped by hand stays stopped. OpenCloud's backup guide asks for this: its files and their metadata (extended attributes) are copied consistently only while it is stopped. OpenCloud is down for the duration of both copies, usually a few minutes at 02:30.
+
+**Write the compose file** / **Start OpenCloud** / **Write the Traefik route**
+As for the other services: `docker compose up --detach --remove-orphans --wait`, then `Host(cloud.<domain>)` to `http://opencloud:9200`.
+
+### Design choices
+
+- **The production release line** (`opencloudeu/opencloud`, 7.2.x), not rolling (`opencloud-rolling`, every three weeks): OpenCloud's own lifecycle page calls rolling "the wrong choice for production". Production releases come about every six months; patch releases in between arrive through Renovate.
+- **PosixFS storage, the default**: files are stored as the user sees them, metadata in extended attributes (`user.oc.*`), no database. Backup and restore are plain file operations, and restic keeps the extended attributes. It also makes the Nextcloud migration a file copy (maintenance guide).
+- **Reaching its own URL without the Internet.** OpenCloud checks every login against `OC_URL` (`https://cloud.<domain>`): it fetches the login service's configuration and keys from there. Its container is only on `proxy-opencloud`, which is internal. `traefik_network_aliases` gives Traefik the name `cloud.<domain>` on that network, so the name resolves to Traefik inside the network and the check goes through Traefik with the real certificate (`OC_INSECURE: false`). Tested locally: from inside OpenCloud, `https://cloud.test/.well-known/openid-configuration` answered through a Traefik alias on an internal network, and nothing else was reachable.
+- **Hardening**: runs as root inside the container (`user: "0:0"`), which is `svc-docker` on the host and owns the data: PosixFS needs every file owned by the user OpenCloud runs as. Read-only root filesystem, a tmpfs `/tmp`, every capability dropped, `no-new-privileges`. The image's default user (1000) would map to a subordinate UID on the host and complicate both the migration and the restore.
+- **`exec opencloud server`**: OpenCloud, not a shell, is process 1 and gets the stop signal: it stops in about a second instead of being killed after the timeout.
+- **No Collabora** (no office editing in the browser): it parses untrusted documents on the server, needs more capabilities and its own host name. Documents open in the desktop and mobile apps.
+- **No e-mail, no update check, no basic authentication**: there is no SMTP; Renovate reports new versions; clients log in with OpenID Connect. Public links must have a password.
+- **Files added on disk** (the migration) are picked up at the next start ("assimilation") but are not virus-scanned by OpenCloud; the nightly ClamAV and YARA scans of `/srv` cover them.
+
+Check:
+
+```bash
+docker-svc ps --filter name=opencloud --format '{{.Names}} {{.Status}}'      # healthy
+curl -s https://cloud.greyroom.net/status.php                                  # from a client: "installed":true
+```
+
+---
+
+## 19. Renovate (image updates)
 
 Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Three files, no role: Renovate does not run on the server.
 
@@ -915,7 +967,7 @@ Applying an update is the maintenance guide's "Image updates".
 
 ---
 
-## 19. Role: update_os
+## 20. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -947,13 +999,13 @@ Container images are **not** updated here: they follow the `update-containers` t
 
 ---
 
-## 20. The pre-commit hook
+## 21. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 21. Files the playbook creates on the server
+## 22. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -986,6 +1038,10 @@ Container images are **not** updated here: they follow the `update-containers` t
 | `/srv/docker/app/immich/` | immich | Compose file, library, database, dump, password |
 | `/srv/docker/system/traefik/dynamic/immich.yml` | immich | Traefik route |
 | `/etc/backup/pre.d/immich` | immich | Database dump before the backup |
+| `/srv/docker/app/opencloud/` | opencloud | Compose file, configuration, files, admin password |
+| `/srv/docker/system/traefik/dynamic/opencloud.yml` | opencloud | Traefik route |
+| `/etc/backup/pre.d/opencloud`, `/etc/backup/post.d/opencloud` | opencloud | Stop before the backup, start after it |
+| `/etc/backup/post.d/` | backup | Applications' scripts run after the backup |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -1006,7 +1062,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 22. Known limits and points to review
+## 23. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -1033,12 +1089,13 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
 - **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
 - **ClamAV and YARA scan the Immich library every night**, as the project document asks (user data in the volumes). With a large library the scans get long; YARA skips files over `yara_max_file_size_mb` (most videos). If the nightly scans run into the day, leave out `library/thumbs` and `library/encoded-video`, which Immich generates itself.
+- **OpenCloud is stopped during the nightly backup**, for the duration of both copies (a few minutes; longer on the first run and on Sundays, with prune and check). Desktop clients retry by themselves.
 - **Immich's database password is set once.** Changing `vault_immich_db_password` alone breaks the connection: change it in Postgres first (maintenance guide).
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 23. How it was tested
+## 24. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -1098,6 +1155,8 @@ The container roles were also run in rootless Podman on the laptop, with the sam
 | --- | --- |
 | Vaultwarden 1.37.5 with the role's options (read-only, no capabilities, port 8080, internal network), in rootless Podman | Healthy; writes only to `data/` and `logs/`; no Internet access; `/admin` disabled; online SQLite backup of the live database passes `integrity_check` |
 | Immich v3.3.6 with the role's options (server read-only with no capabilities; Postgres and Valkey with the reduced capabilities), in rootless Podman | Admin created, an image uploaded (original and thumbnails written); `pg_dumpall` dump restored into an empty Postgres with the asset present |
+| OpenCloud 7.2.4 with the role's options (root in the container, read-only, no capabilities, `exec`), in rootless Podman | Starts healthy; stops in about a second; user `mattia` created; files copied into its space with OpenCloud stopped and `tar --no-overwrite-dir` appear after the start, names with spaces and accents, original dates and identical content; reachable through a Traefik alias on an internal network |
+| restic 0.19 on `user.oc.*` extended attributes | Backed up and restored |
 
 On prod-srv-01 (November 2026), after the first deployment:
 

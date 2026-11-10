@@ -1,0 +1,15 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Run by the backup after both copies (/etc/backup/post.d): starts OpenCloud
+# again if /etc/backup/pre.d/opencloud stopped it.
+set -euo pipefail
+
+MARK=/run/backup-stopped-opencloud
+if [ ! -e "$MARK" ]; then
+    echo "opencloud: not stopped by the backup, nothing to start."
+    exit 0
+fi
+
+/usr/local/bin/docker-svc start opencloud >/dev/null
+rm -f "$MARK"
+echo "opencloud: started again."

@@ -32,7 +32,7 @@ Contents:
 | Disk space check | Every 15 minutes | Telegram when a threshold is crossed |
 | Integrity check (NTP, sshd logging, libraries, Ebury) | Every 15 minutes | Telegram when the findings change, then daily while they last |
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
-| Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays | Telegram at every run |
+| Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays; OpenCloud is stopped while it runs | Telegram at every run |
 | Renovate (on GitHub, not on the server) | Saturday morning | Telegram when there are new PRs, updates to do by hand, or a run that did not finish |
 
 Nothing in this list reboots the server or updates container images. Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
@@ -201,7 +201,8 @@ Message: `❌ BACKUP FAILED` or `⚠️ BACKUP COMPLETED WITH WARNINGS`. Each co
 | `repository is already locked` | A previous run was interrupted (reboot, power cut) | `sudo backup usb list locks` or `sudo backup s3 list locks`, then `sudo backup <copy> unlock` |
 | `prune or check failed` | Damaged repository data (disk errors on USB, rare on S3) | `sudo backup <copy> check --read-data`; if it reports damaged data, start a new repository on that copy and keep the old one until the new one has a few weeks of history |
 | `some files could not be read` | A file vanished or changed during the backup | Harmless once in a while; if it repeats, see which file in `journalctl -u backup.service` |
-| `Pre-backup scripts: at least one failed` | An application's dump failed (container down, database error) | `journalctl -u backup.service`, fix the application; the previous dump was backed up |
+| `Pre-backup scripts: at least one failed` | An application's dump failed (container down, database error), or OpenCloud did not stop | `journalctl -u backup.service`, fix the application; the previous dump was backed up |
+| `Post-backup scripts: at least one failed` | OpenCloud did not start again after the backup | `docker-svc ps -a`, then `docker-svc start opencloud` and `docker-svc logs --tail 50 opencloud` |
 
 Run the backup by hand: `sudo systemctl start backup.service`, then `journalctl -u backup.service -n 50`.
 
@@ -340,6 +341,59 @@ docker-svc exec -it immich_postgres psql -U postgres -c "ALTER USER postgres PAS
 ```
 
 Then put the same value in `vault_immich_db_password` and run `--tags immich`: the server restarts with the new password.
+
+### Restore OpenCloud
+
+Everything is plain files: the configuration (`config/`) and the data (`data/`, users' files with their metadata in extended attributes). Restore both from the same snapshot, with OpenCloud stopped. Copy only with tools that keep extended attributes: `restic restore` and `cp -a` do; `cp` without `-a`, or `rsync` without `-X`, would lose OpenCloud's metadata.
+
+```bash
+C="docker-svc compose -f /srv/docker/app/opencloud/compose.yml"; D=/srv/docker/app/opencloud
+$C stop
+sudo backup usb restore latest --target /tmp/restore --include $D/config --include $D/data
+sudo rm -rf $D/config $D/data
+sudo cp -a /tmp/restore$D/config /tmp/restore$D/data $D/
+$C start
+sudo rm -rf /tmp/restore
+```
+
+Then log in and open a few files. For a single lost file, use the trash or the file versions in the web interface first.
+
+### Migrate the files from Nextcloud
+
+One time, for user `mattia` (the same steps for any other user). Nextcloud and the production server are on networks the laptop cannot reach at the same time, so the files go through the laptop as a tar file. Shares, versions, trash, calendars and contacts are not migrated.
+
+1. **Nextcloud: stop changes and find the files.** On the Nextcloud host:
+   ```bash
+   docker exec -u www-data <nextcloud container> php occ maintenance:mode --on
+   docker exec -u www-data <nextcloud container> php occ config:system:get datadirectory   # inside the container
+   docker inspect <nextcloud container> --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+   ```
+   The user's files are in `<data directory>/mattia/files/` (on the host: the mount source of the data directory). Only `files/` is copied: `files_versions/`, `files_trashbin/` and the cache stay behind.
+2. **Copy to the laptop** (on the Nextcloud network):
+   ```bash
+   read -rsp "sudo password on the Nextcloud host: " PW; echo
+   printf '%s\n' "$PW" | ssh <user>@<nextcloud host> 'sudo -S -p "" tar -C <host path>/mattia/files -cf - .' > ~/nextcloud-mattia.tar
+   unset PW
+   tar -tf ~/nextcloud-mattia.tar | grep -v '/$' | wc -l                                    # number of files
+   ssh <user>@<nextcloud host> 'sudo find <host path>/mattia/files -type f | wc -l'          # must match
+   ```
+3. **OpenCloud: create the user and its space.** Log in as `admin`, create `mattia` (*Admin settings → Users*), then log in once as `mattia` in a private window, so that OpenCloud creates the personal space.
+4. **Find the space on disk** (on the server):
+   ```bash
+   sudo python3 -c 'import os; b="/srv/docker/app/opencloud/data/storage/users/users"; [print(d, os.getxattr(f"{b}/{d}", "user.oc.space.alias").decode()) for d in os.listdir(b)]'
+   ```
+   It prints one directory per personal space: take the one with `personal/mattia`.
+5. **Stop OpenCloud** (on the server): `docker-svc compose -f /srv/docker/app/opencloud/compose.yml stop`.
+6. **Copy from the laptop** (on the production network). `--no-overwrite-dir` leaves the space's own directory, and the extended attributes OpenCloud keeps on it, untouched:
+   ```bash
+   SPACE=/srv/docker/app/opencloud/data/storage/users/users/<directory from step 4>
+   ssh v@10.123.11.11 "sudo tar -C $SPACE -xf - --no-same-owner --no-overwrite-dir && sudo chown -R svc-docker:svc-docker $SPACE" < ~/nextcloud-mattia.tar
+   ```
+7. **Start OpenCloud**: `docker-svc compose -f /srv/docker/app/opencloud/compose.yml start`. At start it scans the space and takes in the new files ("assimilation"); with many files it takes a few minutes. Then check in the web interface: the folders, a few files, their dates.
+8. **Clients**: install the OpenCloud desktop app on each computer, log in at `https://cloud.greyroom.net` and choose the folders to sync, in a new local folder (not the old Nextcloud one). Remove the Nextcloud client only when everything is in sync.
+9. Run a backup (`sudo systemctl start backup.service`). Keep Nextcloud in maintenance mode, untouched, for a few weeks; then delete `~/nextcloud-mattia.tar` from the laptop (it holds every file, unencrypted) and retire Nextcloud.
+
+Tested with rootless Podman: files copied this way appear in OpenCloud with spaces and accents in their names, their original dates and identical content.
 
 ### Image updates
 
@@ -561,6 +615,7 @@ This is also the yearly drill, on a lab VM.
 | Traefik | `/srv/docker/system/traefik/logs/traefik.log` (errors, certificates), `access.log` (requests), the dashboard on `https://proxy.greyroom.net` |
 | Vaultwarden | `/srv/docker/app/vaultwarden/logs/vaultwarden.log` (logins, failed logins with the client IP) |
 | Immich | `docker-svc logs immich_server` (lost when the container is recreated) |
+| OpenCloud | `docker-svc logs opencloud` (JSON, lost when the container is recreated) |
 | Container status | `docker-svc ps` |
 | Renovate | *Actions → Renovate* on GitHub (one log per run), the Dependency Dashboard issue |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |

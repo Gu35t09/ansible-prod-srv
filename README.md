@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden and Immich are in place, with Renovate proposing image updates; OpenCloud and Paperless come next, each as its own role. DNS stays on Unbound (OPNsense).
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden, Immich and OpenCloud are in place, with Renovate proposing image updates; Paperless comes next, each as its own role. DNS stays on Unbound (OPNsense).
 
 ## Layout
 
@@ -31,6 +31,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── traefik/                      # reverse proxy, Let's Encrypt wildcard (tags: traefik, update-containers)
 │   ├── vaultwarden/                  # password manager, SQLite (tags: vaultwarden, update-containers)
 │   ├── immich/                       # photos, without machine learning (tags: immich, update-containers)
+│   ├── opencloud/                    # file sync and share, replaces Nextcloud (tags: opencloud, update-containers)
 │   ├── update_os/                    # package upgrades, reboot or report (tag: update-os)
 │   └── notify/                       # Telegram helper, a dependency of the roles that send messages
 ├── renovate.json                     # which image versions Renovate watches
@@ -57,6 +58,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `traefik` | Traefik in `/srv/docker/system/traefik`, image pinned by tag and digest. Ports 80/443 on the services address only, HTTP redirected to HTTPS, one Let's Encrypt wildcard certificate for the domain (Cloudflare DNS challenge), dashboard on `proxy.<domain>` behind a password. Routes come only from files in `dynamic/`, one per service: Traefik has no access to the Docker socket. Read-only container, no capabilities except binding ports. |
 | `vaultwarden` | Vaultwarden in `/srv/docker/app/vaultwarden` with SQLite, image pinned by tag and digest, on `vault.<domain>`. Only on its internal network with Traefik: no published ports, no Internet access (so no favicon downloads). Sign-ups off, admin page disabled, password hints off. Read-only container with no capabilities. A dump script for the backup copies the database with SQLite's online backup and checks it. |
 | `immich` | Immich in `/srv/docker/app/immich` on `photo.<domain>`: server, Postgres and Valkey, images pinned by tag and digest; **no machine learning** container. Only the server is on Traefik's network; the database and Valkey share an internal network with it. No container has Internet access. Read-only server with no capabilities; Postgres and Valkey keep only what their entrypoints need. A dump script for the backup runs `pg_dumpall` and checks the result; the live database directory is left out of the backup. |
+| `opencloud` | OpenCloud (production release line) in `/srv/docker/app/opencloud` on `cloud.<domain>`, image pinned by tag and digest, built-in user directory, PosixFS storage (files on disk as the user sees them, no database). Only on its internal network with Traefik, where Traefik also answers to `cloud.<domain>` so the login checks need no Internet access. Read-only container with no capabilities. Stopped during the nightly backup for a consistent copy, started again after it. No Collabora. |
 | `update_os` | `apt dist-upgrade`; when a newer kernel is waiting or a package asks for a reboot, reboot (if allowed) or report it on Telegram; restart of the rootless daemon after a Docker upgrade. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 
@@ -65,7 +67,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,opencloud,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades; reports on Telegram when a reboot is needed (no automatic reboot on prod-srv-01). Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
@@ -121,6 +123,8 @@ For Immich you need `immich` in `traefik_networks` (run `--tags traefik` once af
 1. Open `https://photo.greyroom.net` and create the admin account (the first account becomes admin).
 2. *Administration → Settings → Machine Learning Settings*: turn off **Enable machine learning**. There is no machine learning container, so otherwise every upload logs errors.
 3. *Administration → Settings → Version Check*: turn it off (the server has no Internet access; Renovate reports new versions).
+
+For OpenCloud you need `opencloud` in `traefik_networks` and in `traefik_network_aliases` (`opencloud: ["cloud.{{ traefik_domain }}"]`, already in `main.yml`; run `--tags traefik` once after adding them), a host override `cloud.greyroom.net` → services address in Unbound, and `vault_opencloud_admin_password` in the vault (`openssl rand -base64 24`). After the first run, log in at `https://cloud.greyroom.net` as `admin`, create the users under *Admin settings → Users*, and log in once as each user so that OpenCloud creates their personal space. Clients: the OpenCloud desktop and mobile apps. Moving from Nextcloud: maintenance guide, "Migrate the files from Nextcloud".
 
 For the backup you need, before the first run:
 
@@ -181,6 +185,8 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |
 | `traefik_acme_ca_server` | Let's Encrypt production | For tests, the staging CA avoids the rate limits (`https://acme-staging-v02.api.letsencrypt.org/directory`); browsers will not trust its certificate. |
 | `vaultwarden_signups_allowed` | `false` | Turn on only to create an account (see "First setup"). |
+| `traefik_network_aliases` | empty; in `main.yml`: `opencloud: [cloud.<domain>]` | Host names Traefik answers to on a service's own network, for a service that calls its own public URL. |
+| `opencloud_admin_password` | — | From the vault (`vault_opencloud_admin_password`). Used only at the first start. |
 | `immich_db_password` | — | From the vault (`vault_immich_db_password`). Used only when the database is created: changing it later does not change the database password. |
 | `update_os_allow_reboot` | `true`; in `main.yml`: `false` | With `false`, the job only reports that a reboot is needed, in its output and on Telegram. False on prod-srv-01: the disk is encrypted and its passphrase is typed at the console. |
 
