@@ -18,6 +18,8 @@ permissions:
   contents: write        # push the update branches
   pull-requests: write   # open and update the PRs
   issues: write          # the Dependency Dashboard issue
+  statuses: write        # the "renovate/stability-days" check on update branches;
+                         # without it Renovate stops after the first branch
 
 concurrency:
   group: renovate
