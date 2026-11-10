@@ -51,11 +51,27 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "GitHub Actions in .github/workflows: the job's GITHUB_TOKEN cannot edit workflow files, so new versions are only listed under Pending Approval. Change the version in the workflow by hand; do not tick the box.",
+      "description": "GitHub Actions in .github/workflows: the job's GITHUB_TOKEN cannot edit workflow files, so only new majors (of the action or the runner image) are listed under Pending Approval. Change the version in the workflow by hand; do not tick the box.",
       "matchManagers": [
         "github-actions"
       ],
-      "dependencyDashboardApproval": true
+      "dependencyDashboardApproval": true,
+      "matchUpdateTypes": [
+        "major"
+      ]
+    },
+    {
+      "description": "Minor, patch and digest updates of the workflow's actions are not worth a manual change every week: the Renovate image itself already follows its major.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pinDigest"
+      ],
+      "enabled": false
     }
   ]
 }

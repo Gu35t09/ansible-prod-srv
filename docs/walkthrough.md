@@ -872,7 +872,7 @@ A GitHub Actions workflow, every Saturday at 05:00 UTC and on demand (*Run workf
 - **Token**: the job's own `GITHUB_TOKEN`, with the permissions listed in the workflow (contents, pull requests, issues: write). It is created for the run and expires with it; there is no personal token to store or renew. The repository must allow Actions to create pull requests (README, "Image updates").
 - **Telegram**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets. Secrets are not given to workflows started from forks.
 - **60 days without activity**: in a public repository GitHub disables scheduled workflows after 60 days with no commits, and says so by e-mail. Merging Renovate's PRs counts as activity; if it happens, re-enable the workflow under *Actions → Renovate*.
-- **The action is pinned to its major tag** (`@v46`) and the Renovate image follows its default major (44). A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot open PRs for the workflow itself: it lists a new major of the action (or of the `runs-on` runner image) under Pending Approval, and the change is made by hand, about once a year.
+- **The action is pinned to a commit** (`@266fef2… # v46.3.13`): it publishes no major tag such as `v46`. The Renovate image it runs follows its major (`renovate:44`), so Renovate's own fixes arrive at every run anyway. A `GITHUB_TOKEN` cannot edit workflow files, so Renovate cannot open PRs for the workflow itself: it lists a new major of the action (or of the `runs-on` runner image) under Pending Approval, and the change is made by hand, about once a year. Minor and patch releases of the action are not listed.
 
 **`renovate.json`**
 
