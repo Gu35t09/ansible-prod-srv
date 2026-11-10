@@ -29,6 +29,18 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The Renovate image the workflow runs (.github/renovate-image). Major tag only: 44.x releases arrive at every run, a new major comes as a normal PR.",
+      "managerFilePatterns": [
+        "/^\\.github/renovate-image$/"
+      ],
+      "matchStrings": [
+        "(?<depName>ghcr\\.io/renovatebot/renovate):(?<currentValue>\\d+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -51,7 +63,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "GitHub Actions in .github/workflows: the job's GITHUB_TOKEN cannot edit workflow files, so only new majors (of the action or the runner image) are listed under Pending Approval. Change the version in the workflow by hand; do not tick the box.",
+      "description": "The workflow's runner image (runs-on) and any action it may use: the job's GITHUB_TOKEN cannot edit workflow files, so only new majors are listed under Pending Approval. Change the version in the workflow by hand; do not tick the box.",
       "matchManagers": [
         "github-actions"
       ],
@@ -61,7 +73,7 @@
       ]
     },
     {
-      "description": "Minor, patch and digest updates of the workflow's actions are not worth a manual change every week: the Renovate image itself already follows its major.",
+      "description": "Minor, patch and digest updates in the workflow file: not worth a manual change every week.",
       "matchManagers": [
         "github-actions"
       ],

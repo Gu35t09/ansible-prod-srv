@@ -3,8 +3,13 @@
 # and no personal token is stored anywhere: it uses the job's own GITHUB_TOKEN,
 # which expires when the job ends. The repository setting "Allow GitHub
 # Actions to create and approve pull requests" must be on.
+# The container is started here with docker run, no third-party action: its
+# output is kept, so the Telegram step can tell a finished run from an
+# interrupted one. The image is in .github/renovate-image, a plain file that
+# Renovate can update with a normal PR (it cannot edit this workflow).
 # Afterwards a Telegram message lists the new PRs and the updates to do by
-# hand (Pending Approval in the Dependency Dashboard), or reports a failed run.
+# hand (Pending Approval in the Dependency Dashboard), or reports a run that
+# did not finish, with the errors Renovate logged.
 name: Renovate
 
 on:
@@ -32,19 +37,39 @@ jobs:
       - name: Note the start time
         run: echo "RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
-      # Pinned to a commit (the action publishes no major tag like v46). The
-      # Renovate image it runs follows its major (44), so Renovate's own fixes
-      # arrive without touching this line. GITHUB_TOKEN cannot edit workflow
-      # files: a new major of the action is only listed in the Dependency
-      # Dashboard and the Telegram message; change it here by hand.
       - name: Run Renovate
         id: renovate
-        uses: renovatebot/github-action@266fef21329c44765ad42f9dea1f01f5d2d91084 # v46.3.13
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # Experimental: a non-zero exit code when the run does not end in
+          # "done". The Telegram step reads the result from the log anyway.
+          RENOVATE_EXIT_CODE_FOR_ERRORS: "true"
           LOG_LEVEL: info
+          LOG_FORMAT: json
+        run: |
+          set -euo pipefail
+          # The image, as committed in the revision this run started from.
+          image=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/renovate-image?ref=${GITHUB_SHA}" \
+            -H "Accept: application/vnd.github.raw" | tr -d '[:space:]')
+          case "$image" in
+            ghcr.io/renovatebot/renovate:*) echo "Image: $image" ;;
+            *) echo "Unexpected image in .github/renovate-image: $image" >&2; exit 1 ;;
+          esac
+          # The token goes in by name (--env NAME), never on the command line.
+          # The JSON log is kept for the next step and shown one line per message.
+          docker run --rm \
+            --env RENOVATE_TOKEN --env RENOVATE_REPOSITORIES \
+            --env RENOVATE_EXIT_CODE_FOR_ERRORS --env LOG_LEVEL --env LOG_FORMAT \
+            "$image" \
+            | tee "$RUNNER_TEMP/renovate.log" \
+            | jq -rR --unbuffered 'try (fromjson
+                | "\((.time // "")[11:19]) \(["", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"][((.level // 30) / 10 | floor)] // "") \(.msg)"
+                  + (if .branch then " [\(.branch)]" else "" end)
+                  + (if .prTitle then " — \(.prTitle)" else "" end)
+                  + (if .result then " result=\(.result)" else "" end))
+              catch .'
 
       - name: Notify Telegram
         if: always()
@@ -52,7 +77,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OUTCOME: ${{ steps.renovate.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -66,8 +90,21 @@ jobs:
               --data-urlencode "disable_web_page_preview=true" \
               --data-urlencode "text=$1"
           }
-          if [ "$OUTCOME" != "success" ]; then
-            send "❌ RENOVATE FAILED (${GITHUB_REPOSITORY})
+          LOG="$RUNNER_TEMP/renovate.log"
+          touch "$LOG"
+          # Renovate's own verdict: "done" means the repository was fully processed.
+          result=$(jq -rR 'fromjson? | select(.msg == "Repository finished") | .result // empty' "$LOG" | tail -n 1)
+          errors=$(jq -rR 'fromjson? | select((.level // 0) >= 50) | "• \(.msg)"' "$LOG" | sort -u | head -n 5)
+          if [ "$result" != "done" ]; then
+            msg="❌ RENOVATE DID NOT FINISH (${GITHUB_REPOSITORY})
+          Result: ${result:-none (it did not start or crashed)}"
+            if [ -n "$errors" ]; then
+              msg="${msg}
+
+          Errors:
+          ${errors}"
+            fi
+            send "${msg}
 
           ${RUN_URL}"
             exit 0
@@ -77,14 +114,14 @@ jobs:
           open=$(jq '[.[] | select(.headRefName | startswith("renovate/"))] | length' <<<"$prs")
           new=$(jq -r --arg since "$RUN_START" \
             '.[] | select(.headRefName | startswith("renovate/")) | select(.createdAt >= $since) | "• \(.title)\n  \(.url)"' <<<"$prs")
-          # Updates Renovate only lists (Postgres majors, GitHub Actions):
+          # Updates Renovate only lists (Postgres majors, the runner image):
           # the "Pending Approval" section of the Dependency Dashboard issue.
           dashboard=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 20 \
             --json title,body --jq '.[] | select(.title == "Dependency Dashboard") | .body' | tr -d '\r')
           pending=$(awk '/^## /{inside = ($0 == "## Pending Approval")} inside && /approve-branch=/' <<<"$dashboard" \
             | sed -e 's/.*-->//' -e 's/^/• /')
-          if [ -z "$new" ] && [ -z "$pending" ]; then
-            echo "No new PRs and nothing to do by hand ($open open)."
+          if [ -z "$new" ] && [ -z "$pending" ] && [ -z "$errors" ]; then
+            echo "No new PRs, nothing to do by hand, no errors ($open open)."
             exit 0
           fi
           msg="🔄 RENOVATE (${GITHUB_REPOSITORY})"
@@ -101,6 +138,13 @@ jobs:
 
           🛠️ Updates to do by hand (Dependency Dashboard, do not tick the box):
           ${pending}"
+          fi
+          if [ -n "$errors" ]; then
+            msg="${msg}
+
+          ⚠️ Errors logged (the run finished, see the log):
+          ${errors}
+          ${RUN_URL}"
           fi
           msg="${msg}
 
