@@ -1,0 +1,122 @@
+# {{ ansible_managed }}
+# Based on Paperless's docker-compose.postgres.yml, rootless variant (user:),
+# without Tika, Gotenberg, e-mail or AI, and with no published ports.
+name: paperless
+
+services:
+  paperless:
+    image: {{ paperless_image }}
+    container_name: paperless
+    restart: unless-stopped
+    # The image's own user: Paperless's rootless mode starts directly as this
+    # user, with no internal privilege change, so it needs no capability. Its
+    # code belongs to this user, so root without capabilities could not run it.
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      PAPERLESS_URL: "https://{{ paperless_host }}"
+      PAPERLESS_REDIS: "redis://broker:6379"
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS_FILE: /run/secrets/paperless/db-password
+      PAPERLESS_SECRET_KEY_FILE: /run/secrets/paperless/secret-key
+      # Created at start if missing; the password is not changed afterwards.
+      PAPERLESS_ADMIN_USER: admin
+      PAPERLESS_ADMIN_PASSWORD_FILE: /run/secrets/paperless/admin-password
+      PAPERLESS_OCR_LANGUAGE: "{{ paperless_ocr_language }}"
+      PAPERLESS_TIME_ZONE: "{{ paperless_timezone }}"
+      PAPERLESS_TASK_WORKERS: "{{ paperless_task_workers }}"
+      PAPERLESS_THREADS_PER_WORKER: "{{ paperless_threads_per_worker }}"
+      PAPERLESS_WEBSERVER_WORKERS: "1"
+      PAPERLESS_FILENAME_FORMAT: "{{ paperless_filename_format }}"
+    volumes:
+      - ./data:/usr/src/paperless/data
+      - ./media:/usr/src/paperless/media
+      - ./consume:/usr/src/paperless/consume
+      - ./export:/usr/src/paperless/export
+      - ./secrets:/run/secrets/paperless:ro
+    # proxy-paperless: Traefik only. backend: the database and Valkey.
+    networks:
+      - proxy-paperless
+      - backend
+    depends_on:
+      - db
+      - broker
+    # The image's check, with time for the first start's database setup.
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "-S", "-L", "--max-time", "2", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+  broker:
+    image: {{ paperless_valkey_image }}
+    container_name: paperless_broker
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint gives /data to the valkey user, then drops root.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    # Task queue only: rebuilt after a restart.
+    tmpfs:
+      - /data
+    networks:
+      - backend
+    healthcheck:
+      test: redis-cli ping | grep -q PONG || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: {{ paperless_postgres_image }}
+    container_name: paperless_db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint fixes the data directory's owner and reads the password
+    # file (owned by Paperless's user), then drops root.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD_FILE: /run/secrets/paperless/db-password
+    volumes:
+      # Postgres 18 keeps its data under /var/lib/postgresql/<major>/.
+      - ./postgres:/var/lib/postgresql
+      - ./secrets/db-password:/run/secrets/paperless/db-password:ro
+    shm_size: 128mb
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username=paperless", "--dbname=paperless"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  proxy-paperless:
+    external: true
+  # No route to the Internet; Traefik is not on it.
+  backend:
+    internal: true

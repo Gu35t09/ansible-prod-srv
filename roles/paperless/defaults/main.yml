@@ -1,0 +1,34 @@
+---
+# Pinned by tag and digest: an update is a change in this file (Renovate),
+# applied with --tags update-containers. Postgres and Valkey follow the
+# versions of Paperless's own docker-compose.postgres.yml.
+paperless_image: "ghcr.io/paperless-ngx/paperless-ngx:3.4.2@sha256:d704e84f88300eb6ab001ab15720a2330ff99169cf9f94d6b8fcc44b63a84c84"
+paperless_postgres_image: "docker.io/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42"
+paperless_valkey_image: "docker.io/valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7"
+
+docker_user: "svc-docker"
+paperless_dir: /srv/docker/app/paperless
+# Traefik reads the route from this directory (written by the traefik role).
+paperless_traefik_dynamic_dir: /srv/docker/system/traefik/dynamic
+
+paperless_host: "document.{{ traefik_domain }}"
+
+# From the vault. The database password is read by Postgres only when it
+# creates the database; the admin account is created at start if missing.
+paperless_db_password: ""
+paperless_secret_key: ""
+paperless_admin_password: ""
+
+# OCR languages (tesseract codes, joined with +); Italian and English ship
+# with the image, other languages would need Internet access at start.
+paperless_ocr_language: "ita+eng"
+paperless_timezone: "{{ system_timezone | default('Etc/UTC') }}"
+
+# i3-7100T: 2 cores, 4 threads. One document at a time, two pages in parallel.
+paperless_task_workers: 1
+paperless_threads_per_worker: 2
+
+# Where the originals are stored under media/documents/originals, so that
+# the files are readable on disk without Paperless. Paperless's own template
+# syntax: !unsafe keeps Ansible from rendering it.
+paperless_filename_format: !unsafe "{{ created_year }}/{{ correspondent }}/{{ title }}"

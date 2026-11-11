@@ -60,5 +60,7 @@
       tags: [immich, update-containers]
     - role: opencloud
       tags: [opencloud, update-containers]
+    - role: paperless
+      tags: [paperless, update-containers]
     - role: update_os
       tags: [update-os, never]

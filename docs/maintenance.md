@@ -358,6 +358,25 @@ sudo rm -rf /tmp/restore
 
 Then log in and open a few files. For a single lost file, use the trash or the file versions in the web interface first.
 
+### Restore Paperless
+
+The documents (`media/`) and `data/` are restored as files; the database from its dump into an empty Postgres, as for Immich. restic restores the numeric owners, so the files keep Paperless's subordinate UID.
+
+```bash
+C="docker-svc compose -f /srv/docker/app/paperless/compose.yml"; D=/srv/docker/app/paperless
+$C down
+sudo backup usb restore latest --target /tmp/restore --include $D/media --include $D/data --include $D/dump
+sudo cp -a /tmp/restore$D/media/. $D/media/
+sudo cp -a /tmp/restore$D/data/. $D/data/
+sudo rm -rf $D/postgres && sudo install -d -o svc-docker -g svc-docker -m 0700 $D/postgres
+$C create && docker-svc start paperless_db && sleep 15
+sudo zcat /tmp/restore$D/dump/paperless.sql.gz | docker-svc exec -i paperless_db psql --username=paperless --dbname=postgres
+$C up -d
+sudo rm -rf /tmp/restore
+```
+
+"current user cannot be dropped" and "role "paperless" already exists" are expected. Then log in and open a few documents; if the search finds nothing, rebuild the index: `docker-svc exec paperless document_index reindex`.
+
 ### Migrate the files from Nextcloud
 
 One time, for user `mattia` (the same steps for any other user). Nextcloud and the production server are on networks the laptop cannot reach at the same time, so the files go through the laptop as a tar file. Shares, versions, trash, calendars and contacts are not migrated.
@@ -628,6 +647,7 @@ This is also the yearly drill, on a lab VM.
 | Vaultwarden | `/srv/docker/app/vaultwarden/logs/vaultwarden.log` (logins, failed logins with the client IP) |
 | Immich | `docker-svc logs immich_server` (lost when the container is recreated) |
 | OpenCloud | `docker-svc logs opencloud` (JSON, lost when the container is recreated) |
+| Paperless | `sudo ls /srv/docker/app/paperless/data/log/` (`paperless.log`, `celery.log`), and *Logs* in its web interface |
 | Container status | `docker-svc ps` |
 | Renovate | *Actions → Renovate* on GitHub (one log per run), the Dependency Dashboard issue |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |

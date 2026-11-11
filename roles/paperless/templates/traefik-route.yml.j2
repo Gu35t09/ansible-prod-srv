@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Written by the paperless role. The certificate, the security headers and the
+# 10-minute read timeout come from the websecure entry point.
+http:
+  routers:
+    paperless:
+      rule: "Host(`{{ paperless_host }}`)"
+      entryPoints:
+        - websecure
+      service: paperless
+
+  services:
+    paperless:
+      loadBalancer:
+        servers:
+          - url: "http://paperless:8000"

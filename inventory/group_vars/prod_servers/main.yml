@@ -66,6 +66,7 @@ traefik_networks:
   - vaultwarden
   - immich
   - opencloud
+  - paperless
 # OpenCloud checks logins against its own public URL: on its network that
 # name points to Traefik, so the container needs no route to the Internet.
 traefik_network_aliases:
@@ -78,6 +79,11 @@ immich_db_password: "{{ vault_immich_db_password | default('') }}"
 # --- OpenCloud ------------------------------------------------------------------
 # The built-in admin account; read only at the first start.
 opencloud_admin_password: "{{ vault_opencloud_admin_password | default('') }}"
+
+# --- Paperless ------------------------------------------------------------------
+paperless_db_password: "{{ vault_paperless_db_password | default('') }}"
+paperless_secret_key: "{{ vault_paperless_secret_key | default('') }}"
+paperless_admin_password: "{{ vault_paperless_admin_password | default('') }}"
 
 # --- Updates ----------------------------------------------------------------------
 # The disk is encrypted (LUKS) and the passphrase is typed at the console at
@@ -101,3 +107,4 @@ backup_s3_append_only: true
 # Live database files: the dump scripts in /etc/backup/pre.d save them instead.
 backup_exclude:
   - /srv/docker/app/immich/postgres
+  - /srv/docker/app/paperless/postgres
