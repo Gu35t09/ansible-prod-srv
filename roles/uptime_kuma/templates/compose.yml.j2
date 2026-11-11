@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+name: uptime-kuma
+
+services:
+  uptime-kuma:
+    image: {{ uptime_kuma_image }}
+    container_name: uptime-kuma
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      # SQLite in data/: no database setup page on the first start.
+      UPTIME_KUMA_DB_TYPE: sqlite
+      TZ: "{{ uptime_kuma_timezone }}"
+    volumes:
+      - ./data:/app/data
+      - ./dump:/dump
+    tmpfs:
+      - /tmp
+    networks:
+      # Traefik, which answers here to every service's host name: the checks
+      # go through the same path as the browsers and the apps.
+      - proxy-uptime-kuma
+      # Outbound, for the Telegram alerts (filtered by OPNsense like the rest
+      # of the server's traffic).
+      - egress
+    healthcheck:
+      test: ["CMD", "/app/extra/healthcheck"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+
+networks:
+  proxy-uptime-kuma:
+    external: true
+  egress: {}

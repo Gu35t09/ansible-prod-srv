@@ -62,5 +62,7 @@
       tags: [opencloud, update-containers]
     - role: paperless
       tags: [paperless, update-containers]
+    - role: uptime_kuma
+      tags: [uptime-kuma, update-containers]
     - role: update_os
       tags: [update-os, never]

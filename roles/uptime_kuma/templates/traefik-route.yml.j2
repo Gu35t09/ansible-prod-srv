@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Written by the uptime_kuma role. The certificate and the security headers
+# come from the websecure entry point; WebSockets need no extra setting.
+http:
+  routers:
+    uptime-kuma:
+      rule: "Host(`{{ uptime_kuma_host }}`)"
+      entryPoints:
+        - websecure
+      service: uptime-kuma
+
+  services:
+    uptime-kuma:
+      loadBalancer:
+        servers:
+          - url: "http://uptime-kuma:3001"

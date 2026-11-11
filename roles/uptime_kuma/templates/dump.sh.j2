@@ -1,0 +1,26 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Consistent copy of the Uptime Kuma database, run by the backup before each
+# run (/etc/backup/pre.d). SQLite's online backup works while Uptime Kuma is
+# writing; copying kuma.db itself might not restore. sqlite3 runs inside the
+# container (the image has it), as the container's own user.
+set -euo pipefail
+
+DUMP={{ (uptime_kuma_dir ~ '/dump') | quote }}
+
+if [ ! -f {{ (uptime_kuma_dir ~ '/data/kuma.db') | quote }} ]; then
+    echo "uptime-kuma: no database yet, nothing to dump."
+    exit 0
+fi
+
+/usr/local/bin/docker-svc exec uptime-kuma sqlite3 /app/data/kuma.db ".backup '/dump/kuma.db.new'"
+
+check=$(/usr/local/bin/docker-svc exec uptime-kuma sqlite3 /dump/kuma.db.new 'PRAGMA integrity_check;')
+if [ "$check" != "ok" ]; then
+    echo "uptime-kuma: the dump failed the integrity check: $check" >&2
+    rm -f "$DUMP/kuma.db.new"
+    exit 1
+fi
+
+mv "$DUMP/kuma.db.new" "$DUMP/kuma.db"
+echo "uptime-kuma: database dumped to $DUMP/kuma.db"
