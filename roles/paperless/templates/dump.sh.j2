@@ -1,0 +1,22 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Dump of the Paperless database, run by the backup before each run
+# (/etc/backup/pre.d). The data directory itself is left out of the backup:
+# copied while Postgres writes, it might not restore.
+set -euo pipefail
+
+DUMP={{ (paperless_dir ~ '/dump') | quote }}
+NEW="$DUMP/paperless.sql.gz.new"
+
+/usr/local/bin/docker-svc exec paperless_db \
+    pg_dumpall --clean --if-exists --username=paperless | gzip > "$NEW"
+
+# A complete dump ends with this line; a truncated one does not.
+if ! gzip -t "$NEW" || ! zcat "$NEW" | tail -n 3 | grep -q 'PostgreSQL database cluster dump complete'; then
+    echo "paperless: the dump is incomplete" >&2
+    rm -f "$NEW"
+    exit 1
+fi
+
+mv "$NEW" "$DUMP/paperless.sql.gz"
+echo "paperless: database dumped to $DUMP/paperless.sql.gz"

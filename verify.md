@@ -328,3 +328,24 @@ curl -sI https://cloud.greyroom.net/ | grep -i strict-transport           # HSTS
 By hand: log in in the browser as a user (the login goes through OpenCloud's own login page), upload a large file over WireGuard (one that takes more than a minute), and log in with the desktop app. A login that fails right after the password page, with "invalid token" errors in `docker-svc logs opencloud`, means OpenCloud cannot reach `https://cloud.greyroom.net` from inside: check `traefik_network_aliases` and run `--tags traefik`.
 
 A second `--tags opencloud` run reports `changed=0`.
+
+## 18. Paperless
+
+On the server:
+
+```bash
+docker-svc ps --filter name=paperless --format '{{.Names}} {{.Status}}'          # paperless, paperless_db, paperless_broker: healthy
+docker-svc inspect paperless --format '{{.Config.User}} {{.HostConfig.CapDrop}}'   # 1000:1000 [ALL]
+docker-svc inspect paperless --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'   # paperless_backend proxy-paperless
+docker-svc network inspect proxy-paperless --format '{{range .Containers}}{{.Name}} {{end}}'          # traefik and paperless
+docker-svc exec paperless curl -s -m 5 -o /dev/null https://github.com; echo "exit code $?"          # not 0: no Internet access
+sudo stat -c '%u:%g %n' /srv/docker/app/paperless/media /srv/docker/app/paperless/data              # the subordinate UID + 999
+sudo /etc/backup/pre.d/paperless && sudo ls -l /srv/docker/app/paperless/dump/
+sudo backup usb ls latest /srv/docker/app/paperless | grep -c 'paperless/postgres$'                # 0: the live database is left out
+```
+
+From a client: `https://document.greyroom.net` shows the login page; log in as `admin`.
+
+By hand: upload a scanned document in Italian (a photo of a bill is enough). Within a minute or two it appears with its text: open it, *Content* tab. Search for a word that is only in the scan. Then check that the original is stored as `media/documents/originals/<year>/<correspondent>/<title>.pdf`.
+
+A second `--tags paperless` run reports `changed=0`.

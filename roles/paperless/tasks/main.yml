@@ -1,0 +1,166 @@
+---
+# Paperless-ngx with Postgres and Valkey, without e-mail fetching, Tika or AI.
+# The web container joins proxy-paperless (Traefik) and an internal backend
+# network with the database and Valkey: no container has Internet access.
+
+- name: Check the Paperless settings
+  ansible.builtin.assert:
+    that:
+      - traefik_domain | default('') | length > 0
+      - "'paperless' in traefik_networks | default([])"
+      - paperless_db_password is match('^[A-Za-z0-9]{20,}$')
+      - paperless_secret_key | length >= 50
+      - paperless_admin_password | length >= 16
+    fail_msg: >-
+      Set traefik_domain, add paperless to traefik_networks in main.yml and run
+      --tags traefik first, and set in the vault vault_paperless_db_password
+      (at least 20 letters and digits), vault_paperless_secret_key (at least 50
+      characters) and vault_paperless_admin_password (at least 16 characters).
+    quiet: true
+
+- name: Look up the Docker service user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ docker_user }}"
+    fail_key: false
+
+- name: Check that rootless Docker is configured
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_passwd'][docker_user] is not none
+    fail_msg: "{{ docker_user }} does not exist: run the playbook with --tags docker first."
+    quiet: true
+
+- name: Check that Traefik is configured
+  ansible.builtin.stat:
+    path: "{{ paperless_traefik_dynamic_dir }}"
+  register: paperless_traefik_dir
+
+- name: Stop if Traefik is missing
+  ansible.builtin.assert:
+    that:
+      - paperless_traefik_dir.stat.isdir | default(false)
+    fail_msg: "{{ paperless_traefik_dynamic_dir }} does not exist: run the playbook with --tags traefik first."
+    quiet: true
+
+# Paperless runs as its image's own user, UID/GID 1000 inside the container.
+# In rootless Docker that is the service user's subordinate ID start + 999 on
+# the host: its data directories must belong to that ID.
+- name: Read the service user's subordinate ID ranges
+  ansible.builtin.command:
+    argv:
+      - awk
+      - "-F:"
+      - "-v"
+      - "user={{ docker_user }}"
+      - "$1 == user { print $2; exit }"
+      - "{{ item }}"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  register: paperless_subid
+  changed_when: false
+
+- name: Compute the host IDs of the container's UID 1000
+  ansible.builtin.set_fact:
+    paperless_host_uid: "{{ paperless_subid.results[0].stdout | int + 999 }}"
+    paperless_host_gid: "{{ paperless_subid.results[1].stdout | int + 999 }}"
+
+- name: Check the subordinate ID ranges
+  ansible.builtin.assert:
+    that:
+      - paperless_subid.results[0].stdout is match('^[0-9]+$')
+      - paperless_subid.results[1].stdout is match('^[0-9]+$')
+    fail_msg: "{{ docker_user }} has no range in /etc/subuid or /etc/subgid: rootless Docker would not work either."
+    quiet: true
+
+- name: Create the Paperless directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ paperless_dir }}", owner: root, group: "{{ docker_user }}", mode: "0750" }
+    # Search index, classifier, logs.
+    - { path: "{{ paperless_dir }}/data", owner: "{{ paperless_host_uid }}", group: "{{ paperless_host_gid }}", mode: "0750" }
+    # Originals, archived (OCR) versions, thumbnails.
+    - { path: "{{ paperless_dir }}/media", owner: "{{ paperless_host_uid }}", group: "{{ paperless_host_gid }}", mode: "0750" }
+    - { path: "{{ paperless_dir }}/consume", owner: "{{ paperless_host_uid }}", group: "{{ paperless_host_gid }}", mode: "0750" }
+    - { path: "{{ paperless_dir }}/export", owner: "{{ paperless_host_uid }}", group: "{{ paperless_host_gid }}", mode: "0750" }
+    # Paperless (UID 1000) must enter it; svc-docker must reach the files to
+    # mount them (group); the files themselves are readable by Paperless only.
+    - { path: "{{ paperless_dir }}/secrets", owner: "{{ paperless_host_uid }}", group: "{{ docker_user }}", mode: "0750" }
+    - { path: "{{ paperless_dir }}/dump", owner: "{{ docker_user }}", group: "{{ docker_user }}", mode: "0700" }
+
+# Postgres changes the owner of its data directory to its own user (a
+# subordinate UID on the host): created once, never touched again here.
+- name: Look for the database directory
+  ansible.builtin.stat:
+    path: "{{ paperless_dir }}/postgres"
+  register: paperless_postgres_dir
+
+- name: Create the database directory
+  ansible.builtin.file:
+    path: "{{ paperless_dir }}/postgres"
+    state: directory
+    owner: "{{ docker_user }}"
+    group: "{{ docker_user }}"
+    mode: "0700"
+  when: not paperless_postgres_dir.stat.exists
+
+# Read by Paperless (UID 1000) and, for the database password, by Postgres's
+# entrypoint as root (which keeps DAC_OVERRIDE).
+- name: Write the secrets
+  ansible.builtin.copy:
+    dest: "{{ paperless_dir }}/secrets/{{ item.name }}"
+    content: "{{ item.value }}"
+    owner: "{{ paperless_host_uid }}"
+    group: "{{ paperless_host_gid }}"
+    mode: "0400"
+  loop:
+    - { name: db-password, value: "{{ paperless_db_password }}" }
+    - { name: secret-key, value: "{{ paperless_secret_key }}" }
+    - { name: admin-password, value: "{{ paperless_admin_password }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# Run by the backup before each run (run-parts: no dot in the name).
+- name: Install the database dump script
+  ansible.builtin.template:
+    src: dump.sh.j2
+    dest: /etc/backup/pre.d/paperless
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Write the compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ paperless_dir }}/compose.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"
+
+- name: Start Paperless
+  ansible.builtin.command:
+    cmd: docker compose --file {{ paperless_dir }}/compose.yml up --detach --remove-orphans --wait
+    chdir: "{{ paperless_dir }}"
+  become: true
+  become_user: "{{ docker_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}"
+    DOCKER_HOST: "unix:///run/user/{{ ansible_facts['getent_passwd'][docker_user][1] }}/docker.sock"
+  register: paperless_up
+  changed_when: paperless_up.stderr is search('Creat|Recreat|Start')
+
+# After the containers are up, so Traefik never routes to a missing service.
+- name: Write the Traefik route
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ paperless_traefik_dynamic_dir }}/paperless.yml"
+    owner: root
+    group: "{{ docker_user }}"
+    mode: "0640"

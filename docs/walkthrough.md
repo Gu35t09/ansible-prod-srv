@@ -24,12 +24,13 @@ Contents:
 16. [Role: vaultwarden](#16-role-vaultwarden)
 17. [Role: immich](#17-role-immich)
 18. [Role: opencloud](#18-role-opencloud)
-19. [Renovate (image updates)](#19-renovate-image-updates)
-20. [Role: update_os](#20-role-update_os)
-21. [The pre-commit hook](#21-the-pre-commit-hook)
-22. [Files the playbook creates on the server](#22-files-the-playbook-creates-on-the-server)
-23. [Known limits and points to review](#23-known-limits-and-points-to-review)
-24. [How it was tested](#24-how-it-was-tested)
+19. [Role: paperless](#19-role-paperless)
+20. [Renovate (image updates)](#20-renovate-image-updates)
+21. [Role: update_os](#21-role-update_os)
+22. [The pre-commit hook](#22-the-pre-commit-hook)
+23. [Files the playbook creates on the server](#23-files-the-playbook-creates-on-the-server)
+24. [Known limits and points to review](#24-known-limits-and-points-to-review)
+25. [How it was tested](#25-how-it-was-tested)
 
 ---
 
@@ -41,7 +42,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`, `opencloud`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`, `opencloud`, `paperless`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
 
 The order matters:
 
@@ -62,6 +63,7 @@ The order matters:
 | `vaultwarden`, `update-containers` | vaultwarden |
 | `immich`, `update-containers` | immich |
 | `opencloud`, `update-containers` | opencloud |
+| `paperless`, `update-containers` | paperless |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
@@ -189,12 +191,13 @@ prod-srv-01 ansible_host=10.123.11.11 ansible_user=v
 | `immich_db_password` | immich | Read from the vault. |
 | `traefik_network_aliases` | traefik | Host names Traefik answers to on a service's network: `cloud.<domain>` for OpenCloud. |
 | `opencloud_admin_password` | opencloud | Read from the vault; used at the first start only. |
+| `paperless_db_password`, `paperless_secret_key`, `paperless_admin_password` | paperless | Read from the vault. |
 | `backup_usb_label`, `backup_s3_endpoint`, `backup_s3_bucket`, `backup_exclude` | backup | The USB disk's label, the S3 bucket, and the live database directories left out (their dumps are backed up). |
 | `restic_password`, `backup_s3_access_key`, `backup_s3_secret_key` | backup | Read from the vault. |
 
 ### vault.yml
 
-It holds the secrets, all with the `vault_` prefix: the Telegram token and chat ID, the restic password, the S3 key, the Cloudflare token, the Traefik dashboard users, the Immich database password and OpenCloud's initial admin password (`vault.yml.example` lists them, with how to generate each). The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
+It holds the secrets, all with the `vault_` prefix: the Telegram token and chat ID, the restic password, the S3 key, the Cloudflare token, the Traefik dashboard users, the Immich database password, OpenCloud's initial admin password, and Paperless's database password, secret key and admin password (`vault.yml.example` lists them, with how to generate each). The pattern `telegram_bot_token: "{{ vault_telegram_bot_token }}"` is the usual Ansible convention: `main.yml` shows which secrets exist and where they are used, and the values stay encrypted.
 
 ---
 
@@ -687,7 +690,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 ### The backup script (`/usr/local/sbin/backup`)
 
-1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden` and `immich`); `opencloud` adds one that stops it. If one fails, the run goes on with the previous dump and the report shows a warning.
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden`, `immich` and `paperless`); `opencloud` adds one that stops it. If one fails, the run goes on with the previous dump and the report shows a warning.
 2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
 3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
 4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check`. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
@@ -925,7 +928,56 @@ curl -s https://cloud.greyroom.net/status.php                                  #
 
 ---
 
-## 19. Renovate (image updates)
+## 19. Role: paperless
+
+Purpose: the document archive, with OCR in Italian and English. It sits in `/srv/docker/app/paperless/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | Three containers: `paperless`, `paperless_db` (Postgres 18), `paperless_broker` (Valkey) |
+| `media/documents/originals/` | The uploaded files, as `<year>/<correspondent>/<title>.pdf` |
+| `media/documents/archive/` | The OCR'd PDF/A versions; `thumbnails/` |
+| `data/` | Search index, the classifier's model, logs |
+| `consume/` | Files dropped here are imported (not used: uploads go through the web and the app) |
+| `postgres/` | The live database (left out of the backup) |
+| `dump/paperless.sql.gz` | `pg_dumpall` output, written before each backup |
+| `secrets/` | Database password, secret key, admin password |
+
+**Check the Paperless settings** / **Look up the Docker service user** / **Check that rootless Docker is configured** / **Check that Traefik is configured** / **Stop if Traefik is missing**
+Stops if `traefik_domain` is empty, if `paperless` is not in `traefik_networks`, if a secret is missing or too short (the database password: letters and digits only), or if Docker or Traefik are not set up yet.
+
+**Read the service user's subordinate ID ranges** / **Compute the host IDs of the container's UID 1000** / **Check the subordinate ID ranges**
+Paperless runs as its image's own user, UID/GID 1000 inside the container. Rootless Docker maps container UID 0 to `svc-docker` and UIDs 1 and up to its subordinate range in `/etc/subuid` (and `/etc/subgid`): UID 1000 is the range start plus 999 on the host. The role reads both ranges and gives Paperless's directories to that ID.
+
+**Create the Paperless directories** / **Look for the database directory** / **Create the database directory** / **Write the secrets**
+The directories above: `data/`, `media/`, `consume/`, `export/` to Paperless's host ID (0750); `secrets/` to Paperless's host ID with group `svc-docker` (Paperless enters it, Docker reaches the files to mount them); the secret files to Paperless's host ID, 0400. `postgres/` is created only when missing, as for Immich. Postgres reads the password file as root, which keeps `DAC_OVERRIDE`.
+
+**Install the database dump script**
+`/etc/backup/pre.d/paperless`: `pg_dumpall` through `docker-svc exec`, checked (gzip and the closing "dump complete" line) before it replaces the previous dump. `postgres/` is in `backup_exclude`.
+
+**Write the compose file** / **Start Paperless** / **Write the Traefik route**
+As for the other services; `Host(document.<domain>)` to `http://paperless:8000`. The health check is the image's own, with five minutes for the first start, which creates the database tables.
+
+### Design choices
+
+- **Rootless mode with the image's user** (`user: "1000:1000"`, Paperless's documented rootless setup): the container starts directly as that user, with no internal privilege change, so it needs **no capability**. Running it as root (UID 0 = `svc-docker`) was tested and does not work without capabilities: the entrypoint then changes owners and users, and the application's code in the image belongs to UID 1000, which root without `DAC_OVERRIDE` cannot write to.
+- **Not read-only**: at start the image compiles its Python code inside itself. Every capability is still dropped, with `no-new-privileges`.
+- **Two networks, no Internet**: `proxy-paperless` holds Traefik and Paperless; `backend` (internal) holds Paperless, Postgres and Valkey. The Italian and English OCR data ship with the image; other languages would be downloaded at start.
+- **No e-mail import, no Tika/Gotenberg, no AI**: documents arrive through the web interface and the mobile app. E-mail import would need an IMAP mailbox and egress, and Tika/Gotenberg parse untrusted Office and HTML files on the server. The AI features need a local LLM that the i3-7100T and 8 GB cannot run usefully. Paperless's built-in classifier still learns tags, correspondents and document types from the documents you classify.
+- **Readable files on disk** (`PAPERLESS_FILENAME_FORMAT`, `<year>/<correspondent>/<title>`): if Paperless is gone, the originals are still browsable. The value carries `!unsafe` in the defaults, so Ansible does not render Paperless's own template syntax.
+- **One task worker, two threads**: one document at a time, two pages in parallel, on 2 cores and 4 threads.
+
+Check:
+
+```bash
+docker-svc ps --filter name=paperless --format '{{.Names}} {{.Status}}'    # three containers, healthy
+curl -s -o /dev/null -w '%{http_code}\n' https://document.greyroom.net/accounts/login/   # from a client: 200
+sudo /etc/backup/pre.d/paperless && sudo ls -l /srv/docker/app/paperless/dump/
+```
+
+---
+
+## 20. Renovate (image updates)
 
 Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Three files, no role: Renovate does not run on the server.
 
@@ -968,7 +1020,7 @@ Applying an update is the maintenance guide's "Image updates".
 
 ---
 
-## 20. Role: update_os
+## 21. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -1000,13 +1052,13 @@ Container images are **not** updated here: they follow the `update-containers` t
 
 ---
 
-## 21. The pre-commit hook
+## 22. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 22. Files the playbook creates on the server
+## 23. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -1043,6 +1095,9 @@ Container images are **not** updated here: they follow the `update-containers` t
 | `/srv/docker/system/traefik/dynamic/opencloud.yml` | opencloud | Traefik route |
 | `/etc/backup/pre.d/opencloud`, `/etc/backup/post.d/opencloud` | opencloud | Stop before the backup, start after it |
 | `/etc/backup/post.d/` | backup | Applications' scripts run after the backup |
+| `/srv/docker/app/paperless/` | paperless | Compose file, documents, database, dump, secrets |
+| `/srv/docker/system/traefik/dynamic/paperless.yml` | paperless | Traefik route |
+| `/etc/backup/pre.d/paperless` | paperless | Database dump before the backup |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -1063,7 +1118,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 23. Known limits and points to review
+## 24. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -1091,13 +1146,15 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **The S3 key on the server can delete**, but the R2 bucket lock keeps everything written in the last 90 days: an intrusion must be noticed, and the history restored from S3, within 90 days. Older objects can be deleted by whoever holds the key.
 - **The S3 copy only grows**: no `forget` or `prune` there. With data that mostly accumulates (photos, documents) the growth is small; clean up by hand when the cost matters.
 - **ClamAV and YARA scan the Immich library every night**, as the project document asks (user data in the volumes). With a large library the scans get long; YARA skips files over `yara_max_file_size_mb` (most videos). If the nightly scans run into the day, leave out `library/thumbs` and `library/encoded-video`, which Immich generates itself.
+- **Paperless opens untrusted files on the server**: OCR, Ghostscript and the PDF tools read every upload. Uploads come only from you, through WireGuard; e-mail import, which would let others send documents, is off.
+- **Paperless's files belong to a subordinate UID** on the host (container UID 1000). A restore with `restic` keeps the numeric owners; files copied in by hand need `chown` to that ID (maintenance guide).
 - **OpenCloud is stopped during the nightly backup**, for the duration of both copies (a few minutes; longer on the first run and on Sundays, with prune and check). Desktop clients retry by themselves.
 - **Immich's database password is set once.** Changing `vault_immich_db_password` alone breaks the connection: change it in Postgres first (maintenance guide).
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 24. How it was tested
+## 25. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 
@@ -1159,6 +1216,7 @@ The container roles were also run in rootless Podman on the laptop, with the sam
 | Immich v3.3.6 with the role's options (server read-only with no capabilities; Postgres and Valkey with the reduced capabilities), in rootless Podman | Admin created, an image uploaded (original and thumbnails written); `pg_dumpall` dump restored into an empty Postgres with the asset present |
 | OpenCloud 7.2.4 with the role's options (root in the container, read-only, no capabilities, `exec`), in rootless Podman | Starts healthy; stops in about a second; user `mattia` created; files copied into its space with OpenCloud stopped and `tar --no-overwrite-dir` appear after the start, names with spaces and accents, original dates and identical content; reachable through a Traefik alias on an internal network |
 | restic 0.19 on `user.oc.*` extended attributes | Backed up and restored |
+| Paperless 3.4.2 as UID 1000 with no capabilities, Postgres 18.6 and Valkey on an internal network, in rootless Podman | Healthy; as root without capabilities, or read-only, it does not start (see the design choices); a scanned Italian invoice OCR'd word for word (accents included) with its date found; `pg_dumpall` restored into an empty Postgres 18 with the document; about 0.7 GB of RAM at rest |
 
 On prod-srv-01 (November 2026), after the first deployment:
 
