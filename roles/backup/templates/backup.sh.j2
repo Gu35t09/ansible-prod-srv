@@ -22,6 +22,7 @@ CONFIGURED_PATHS=({% for path in backup_paths %}{{ path | quote }}{{ ' ' if not 
 EXCLUDES=({% for pattern in backup_exclude %}{{ pattern | quote }}{{ ' ' if not loop.last }}{% endfor %})
 KEEP=(--keep-daily {{ backup_keep_daily | int }} --keep-weekly {{ backup_keep_weekly | int }} --keep-monthly {{ backup_keep_monthly | int }})
 MAINTENANCE_WEEKDAY={{ backup_maintenance_weekday | int }}
+READ_DATA_SUBSET={{ backup_check_read_data_subset | quote }}
 PRE_DIR=/etc/backup/pre.d
 POST_DIR=/etc/backup/post.d
 HOST=$(hostname)
@@ -162,11 +163,17 @@ EXCLUDE_ARGS=(--exclude-caches)
 for pattern in "${EXCLUDES[@]}"; do
     EXCLUDE_ARGS+=(--exclude "$pattern")
 done
+CHECK_ARGS=()
+CHECKED="check"
+if [ -n "$READ_DATA_SUBSET" ]; then
+    CHECK_ARGS=(--read-data-subset "$READ_DATA_SUBSET")
+    CHECKED="check (${READ_DATA_SUBSET} of the data read)"
+fi
 MAINTENANCE=false
 [ "$(date +%u)" -eq "$MAINTENANCE_WEEKDAY" ] && MAINTENANCE=true
 
 # Backs up to one repository, then forgets old snapshots (and on the
-# maintenance day prunes and checks). With cleanup=no (an append-only copy,
+# maintenance day prunes and checks, reading back part of the data). With cleanup=no (an append-only copy,
 # whose objects the provider locks against deletion) it never deletes: no
 # forget and no prune, only the check. Adds one line to the report.
 backup_to() {
@@ -207,13 +214,13 @@ backup_to() {
     fi
     if [ "$MAINTENANCE" = true ]; then
         if [ "$cleanup" = yes ]; then
-            output=$(restic -r "$repository" prune 2>&1 && restic -r "$repository" check 2>&1)
+            output=$(restic -r "$repository" prune 2>&1 && restic -r "$repository" check "${CHECK_ARGS[@]}" 2>&1)
             rc_maint=$?
-            what="prune and check"
+            what="prune and $CHECKED"
         else
-            output=$(restic -r "$repository" check 2>&1)
+            output=$(restic -r "$repository" check "${CHECK_ARGS[@]}" 2>&1)
             rc_maint=$?
-            what="check"
+            what="$CHECKED"
         fi
         if [ $rc_maint -eq 0 ]; then
             extra+=", ${what} OK"

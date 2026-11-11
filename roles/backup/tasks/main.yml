@@ -12,10 +12,12 @@
       - not backup_s3_enabled | bool or (backup_s3_endpoint | length > 0 and backup_s3_bucket | length > 0)
       - not backup_s3_enabled | bool or (backup_s3_access_key | length > 0 and backup_s3_secret_key | length > 0)
       - backup_paths | length > 0
+      - backup_check_read_data_subset is match('^([0-9]+(\.[0-9]+)?%)?$')
     fail_msg: >-
       Enable at least one copy, set vault_restic_password (20 characters or more)
       and, for S3, backup_s3_endpoint, backup_s3_bucket and the access keys
       (vault_backup_s3_access_key, vault_backup_s3_secret_key).
+      backup_check_read_data_subset is a percentage such as "5%", or "".
     quiet: true
 
 - name: Install restic

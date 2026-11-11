@@ -32,7 +32,7 @@ Contents:
 | Disk space check | Every 15 minutes | Telegram when a threshold is crossed |
 | Integrity check (NTP, sshd logging, libraries, Ebury) | Every 15 minutes | Telegram when the findings change, then daily while they last |
 | YARA scan (files and sshd memory) | Daily at 01:00 | Telegram on matches or errors only |
-| Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays; OpenCloud is stopped while it runs | Telegram at every run |
+| Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays (5% of the data read back each time); OpenCloud is stopped while it runs | Telegram at every run |
 | Renovate (on GitHub, not on the server) | Saturday morning | Telegram when there are new PRs, updates to do by hand, or a run that did not finish |
 
 Nothing in this list reboots the server or updates container images. Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
@@ -199,7 +199,7 @@ Message: `❌ BACKUP FAILED` or `⚠️ BACKUP COMPLETED WITH WARNINGS`. Each co
 | `the repository does not exist` | A new disk or bucket, or the repository was deleted | New: `sudo backup --init`. Not new: someone deleted it, see [Suspected compromise](#suspected-compromise); for S3, the old versions are still in the bucket if object lock or versioning is on |
 | S3 errors (`Access Denied`, timeouts) | Key revoked or expired, bucket policy, endpoint not allowed on OPNsense | Check the key at the provider and the OPNsense log, then run the backup by hand |
 | `repository is already locked` | A previous run was interrupted (reboot, power cut) | `sudo backup usb list locks` or `sudo backup s3 list locks`, then `sudo backup <copy> unlock` |
-| `prune or check failed` | Damaged repository data (disk errors on USB, rare on S3) | `sudo backup <copy> check --read-data`; if it reports damaged data, start a new repository on that copy and keep the old one until the new one has a few weeks of history |
+| `prune or check failed` | Damaged repository data (disk errors on USB, rare on S3): the weekly read of 5% of the data finds it before a restore does | `sudo backup <copy> check --read-data`; if it reports damaged data, start a new repository on that copy and keep the old one until the new one has a few weeks of history |
 | `some files could not be read` | A file vanished or changed during the backup | Harmless once in a while; if it repeats, see which file in `journalctl -u backup.service` |
 | `Pre-backup scripts: at least one failed` | An application's dump failed (container down, database error), or OpenCloud did not stop | `journalctl -u backup.service`, fix the application; the previous dump was backed up |
 | `Post-backup scripts: at least one failed` | OpenCloud did not start again after the backup | `docker-svc ps -a`, then `docker-svc start opencloud` and `docker-svc logs --tail 50 opencloud` |
