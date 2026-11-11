@@ -950,7 +950,7 @@ Stops if `traefik_domain` is empty, if `paperless` is not in `traefik_networks`,
 Paperless runs as its image's own user, UID/GID 1000 inside the container. Rootless Docker maps container UID 0 to `svc-docker` and UIDs 1 and up to its subordinate range in `/etc/subuid` (and `/etc/subgid`): UID 1000 is the range start plus 999 on the host. The role reads both ranges and gives Paperless's directories to that ID.
 
 **Create the Paperless directories** / **Look for the database directory** / **Create the database directory** / **Write the secrets**
-The directories above: `data/`, `media/`, `consume/`, `export/` to Paperless's host ID (0750); `secrets/` to Paperless's host ID with group `svc-docker` (Paperless enters it, Docker reaches the files to mount them); the secret files to Paperless's host ID, 0400. `postgres/` is created only when missing, as for Immich. Postgres reads the password file as root, which keeps `DAC_OVERRIDE`.
+The directories above: `data/`, `media/`, `consume/`, `export/` to Paperless's host ID (0750); `secrets/` to Paperless's host ID with group `svc-docker` (Paperless enters it, Docker reaches the files to mount them); the secret files to Paperless's host ID, 0400. `postgres/` to the container's `postgres` user (host ID = subuid start + 998, 0700): Postgres 18 keeps its data in `18/docker` inside the mount, and its entrypoint, after switching from root to `postgres`, must enter the mount itself. Postgres reads the password file as root, which keeps `DAC_OVERRIDE`.
 
 **Install the database dump script**
 `/etc/backup/pre.d/paperless`: `pg_dumpall` through `docker-svc exec`, checked (gzip and the closing "dump complete" line) before it replaces the previous dump. `postgres/` is in `backup_exclude`.

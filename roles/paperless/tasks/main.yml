@@ -96,19 +96,16 @@
 
 # Postgres changes the owner of its data directory to its own user (a
 # subordinate UID on the host): created once, never touched again here.
-- name: Look for the database directory
-  ansible.builtin.stat:
-    path: "{{ paperless_dir }}/postgres"
-  register: paperless_postgres_dir
-
+# Owned by the container's postgres user (UID 999): the entrypoint chowns only
+# 18/docker inside it, then runs again as postgres and must enter this one.
+# Not recursive, so the data files inside are left alone.
 - name: Create the database directory
   ansible.builtin.file:
     path: "{{ paperless_dir }}/postgres"
     state: directory
-    owner: "{{ docker_user }}"
-    group: "{{ docker_user }}"
+    owner: "{{ paperless_subid.results[0].stdout | int + 998 }}"
+    group: "{{ paperless_subid.results[1].stdout | int + 998 }}"
     mode: "0700"
-  when: not paperless_postgres_dir.stat.exists
 
 # Read by Paperless (UID 1000) and, for the database password, by Postgres's
 # entrypoint as root (which keeps DAC_OVERRIDE).
