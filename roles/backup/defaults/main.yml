@@ -4,6 +4,11 @@ backup_on_calendar: "*-*-* 02:30:00"
 # Day of the week (1 = Monday ... 7 = Sunday) for pruning old snapshots and
 # checking the repositories, after that day's backup.
 backup_maintenance_weekday: 7
+# Share of the stored data that the weekly check reads back and verifies,
+# chosen at random each time: "5%" reads nearly everything in about five
+# months. Without it restic checks only the structure and index. "" turns
+# it off.
+backup_check_read_data_subset: "5%"
 
 # What to back up. Container data lives under /srv/docker/{system,app}/<name>
 # (compose file, data and database dumps); /etc is small and keeps the
