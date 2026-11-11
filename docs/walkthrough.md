@@ -702,7 +702,8 @@ What protects the copies:
 
 - **Encryption**: restic encrypts everything with the password; the USB disk and the bucket hold nothing readable without it.
 - **USB**: mounted only during the backup, so for 23 hours a day nothing on the server can write to it. You can unplug it at any time outside 02:30 and take it elsewhere.
-- **S3**: the server's key can delete objects, so a compromised server could delete the repository. **Object lock or versioning on the bucket**, set at the provider, is what keeps old versions out of its reach.
+- **S3**: the server's key can delete objects. On prod-srv-01 the R2 bucket locks `data/`, `snapshots/`, `keys/` and `config` for 90 days (bucket lock rules, set in the Cloudflare dashboard, which the server's key cannot change): nothing written there can be deleted or overwritten for 90 days. `locks/` stays unlocked (restic deletes its lock file at every run), and so does `index/` (rebuilt from the data by `restic repair index` if it is lost).
+- **Append-only S3 copy** (`backup_s3_append_only: true`): the script never deletes from it, since the deletions would fail on locked objects: no `forget` (every daily snapshot is kept) and no `prune`; the Sunday `check` still runs, and the report says "append-only". The bucket only grows, by what changes on the server; the USB copy keeps its retention. An occasional clean-up of the S3 copy is a manual step (maintenance guide).
 
 ---
 
@@ -1087,7 +1088,8 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
   - A separate rootless user for Vaultwarden alone would keep an escape from the other services away from it, at the cost of a second Docker daemon. Not done for now (one person to maintain it).
 - **Vaultwarden sends no e-mail.** Without SMTP (egress is blocked) there is no reset by mail and no new-device notice: the master password must be on the emergency sheet, and the vault export is an open point in the project document.
 - **Both backup copies use the same password.** Losing it loses both; keep it on the emergency sheet.
-- **The S3 key on the server can delete.** Without object lock or versioning on the bucket, a compromised server can erase the off-site history.
+- **The S3 key on the server can delete**, but the R2 bucket lock keeps everything written in the last 90 days: an intrusion must be noticed, and the history restored from S3, within 90 days. Older objects can be deleted by whoever holds the key.
+- **The S3 copy only grows**: no `forget` or `prune` there. With data that mostly accumulates (photos, documents) the growth is small; clean up by hand when the cost matters.
 - **ClamAV and YARA scan the Immich library every night**, as the project document asks (user data in the volumes). With a large library the scans get long; YARA skips files over `yara_max_file_size_mb` (most videos). If the nightly scans run into the day, leave out `library/thumbs` and `library/encoded-video`, which Immich generates itself.
 - **OpenCloud is stopped during the nightly backup**, for the duration of both copies (a few minutes; longer on the first run and on Sundays, with prune and check). Desktop clients retry by themselves.
 - **Immich's database password is set once.** Changing `vault_immich_db_password` alone breaks the connection: change it in Postgres first (maintenance guide).

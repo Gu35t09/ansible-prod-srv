@@ -16,6 +16,7 @@ USB_ENABLED={{ backup_usb_enabled | bool | string | lower | quote }}
 USB_DEVICE=/dev/disk/by-label/{{ backup_usb_label | quote }}
 USB_MOUNTPOINT={{ backup_usb_mountpoint | quote }}
 S3_ENABLED={{ backup_s3_enabled | bool | string | lower | quote }}
+S3_APPEND_ONLY={{ backup_s3_append_only | bool | string | lower | quote }}
 S3_REPOSITORY={{ ('s3:https://' ~ (backup_s3_endpoint | regex_replace('^https?://', '') | regex_replace('/+$', '')) ~ '/' ~ backup_s3_bucket ~ '/' ~ backup_s3_prefix) | quote }}
 CONFIGURED_PATHS=({% for path in backup_paths %}{{ path | quote }}{{ ' ' if not loop.last }}{% endfor %})
 EXCLUDES=({% for pattern in backup_exclude %}{{ pattern | quote }}{{ ' ' if not loop.last }}{% endfor %})
@@ -165,9 +166,11 @@ MAINTENANCE=false
 [ "$(date +%u)" -eq "$MAINTENANCE_WEEKDAY" ] && MAINTENANCE=true
 
 # Backs up to one repository, then forgets old snapshots (and on the
-# maintenance day prunes and checks). Adds one line to the report.
+# maintenance day prunes and checks). With cleanup=no (an append-only copy,
+# whose objects the provider locks against deletion) it never deletes: no
+# forget and no prune, only the check. Adds one line to the report.
 backup_to() {
-    local name=$1 repository=$2 state output rc start snapshot added files elapsed extra=""
+    local name=$1 repository=$2 cleanup=${3:-yes} state output rc rc_maint what start snapshot added files elapsed extra=""
     start=$(date +%s)
     echo "=== $name: $repository"
 
@@ -195,21 +198,33 @@ backup_to() {
         return
     fi
 
-    if ! output=$(restic -r "$repository" forget "${KEEP[@]}" 2>&1); then
-        echo "$output"
-        extra+=", cleanup of old snapshots failed"
-        WARNED=true
+    if [ "$cleanup" = yes ]; then
+        if ! output=$(restic -r "$repository" forget "${KEEP[@]}" 2>&1); then
+            echo "$output"
+            extra+=", cleanup of old snapshots failed"
+            WARNED=true
+        fi
     fi
     if [ "$MAINTENANCE" = true ]; then
-        if output=$(restic -r "$repository" prune 2>&1 && restic -r "$repository" check 2>&1); then
-            extra+=", prune and check OK"
+        if [ "$cleanup" = yes ]; then
+            output=$(restic -r "$repository" prune 2>&1 && restic -r "$repository" check 2>&1)
+            rc_maint=$?
+            what="prune and check"
+        else
+            output=$(restic -r "$repository" check 2>&1)
+            rc_maint=$?
+            what="check"
+        fi
+        if [ $rc_maint -eq 0 ]; then
+            extra+=", ${what} OK"
         else
             echo "$output"
-            REPORT+=("❌ ${name}: snapshot ${snapshot} saved, but prune or check failed: $(tail -n 1 <<< "$output")")
+            REPORT+=("❌ ${name}: snapshot ${snapshot} saved, but ${what} failed: $(tail -n 1 <<< "$output")")
             FAILED=true
             return
         fi
     fi
+    [ "$cleanup" = no ] && extra+=", append-only"
 
     elapsed=$(( $(date +%s) - start ))
     if [ $rc -eq 3 ]; then
@@ -230,7 +245,11 @@ if [ "$USB_ENABLED" = true ]; then
     fi
 fi
 if [ "$S3_ENABLED" = true ]; then
-    backup_to S3 "$S3_REPOSITORY"
+    if [ "$S3_APPEND_ONLY" = true ]; then
+        backup_to S3 "$S3_REPOSITORY" no
+    else
+        backup_to S3 "$S3_REPOSITORY"
+    fi
 fi
 
 # Application hooks after both copies, whatever their result: restart the

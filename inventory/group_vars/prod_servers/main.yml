@@ -94,6 +94,10 @@ backup_s3_bucket: "backups"
 restic_password: "{{ vault_restic_password | default('') }}"
 backup_s3_access_key: "{{ vault_backup_s3_access_key | default('') }}"
 backup_s3_secret_key: "{{ vault_backup_s3_secret_key | default('') }}"
+# The R2 bucket locks prod-srv-01/{data,snapshots,keys}/ and config for 90 days
+# (README, "Backup"): a compromised server cannot delete the off-site copy, so
+# restic never deletes there either.
+backup_s3_append_only: true
 # Live database files: the dump scripts in /etc/backup/pre.d save them instead.
 backup_exclude:
   - /srv/docker/app/immich/postgres
