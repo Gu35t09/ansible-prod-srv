@@ -349,3 +349,23 @@ From a client: `https://document.greyroom.net` shows the login page; log in as `
 By hand: upload a scanned document in Italian (a photo of a bill is enough). Within a minute or two it appears with its text: open it, *Content* tab. Search for a word that is only in the scan. Then check that the original is stored as `media/documents/originals/<year>/<correspondent>/<title>.pdf`.
 
 A second `--tags paperless` run reports `changed=0`.
+
+## 19. Uptime Kuma
+
+On the server:
+
+```bash
+docker-svc ps --filter name=uptime-kuma --format '{{.Names}} {{.Status}}'          # uptime-kuma: healthy
+docker-svc inspect uptime-kuma --format '{{.Config.User}} {{.HostConfig.CapDrop}} {{.HostConfig.ReadonlyRootfs}}'   # node [ALL] true
+docker-svc inspect uptime-kuma --format '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}'   # proxy-uptime-kuma uptime-kuma_egress
+docker-svc exec uptime-kuma curl -s -o /dev/null -w '%{http_code}\n' https://vault.greyroom.net/alive   # 200: through Traefik
+docker-svc exec uptime-kuma curl -s -o /dev/null -w '%{http_code}\n' https://api.telegram.org            # 302 or 200: the way out for the alerts
+sudo stat -c '%u:%g %n' /srv/docker/app/uptime-kuma/data                                              # the subordinate UID + 999
+sudo /etc/backup/pre.d/uptime-kuma && sudo ls -l /srv/docker/app/uptime-kuma/dump/
+```
+
+From a client: `https://health.greyroom.net` asks to create the admin account (first visit) or shows the login.
+
+By hand: stop a service (`docker-svc stop vaultwarden`). Within two check intervals Telegram shows it down; start it again (`docker-svc start vaultwarden`) and the "up" message follows.
+
+A second `--tags uptime-kuma` run reports `changed=0`.

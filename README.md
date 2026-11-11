@@ -2,7 +2,7 @@
 
 Ansible configuration for the production homelab server: Debian 13 with rootless Docker, behind an OPNsense firewall. The design decisions behind it are in [homelab-prod](https://github.com/Gu35t09/homelab-prod).
 
-It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden, Immich, OpenCloud and Paperless are in place, each as its own role, with Renovate proposing image updates. DNS stays on Unbound (OPNsense).
+It covers the server foundations, detection (ClamAV, integrity check, YARA) and the backup (restic to a USB disk and S3). Traefik, Vaultwarden, Immich, OpenCloud, Paperless and Uptime Kuma are in place, each as its own role, with Renovate proposing image updates. DNS stays on Unbound (OPNsense).
 
 ## Layout
 
@@ -33,6 +33,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 │   ├── immich/                       # photos, without machine learning (tags: immich, update-containers)
 │   ├── opencloud/                    # file sync and share, replaces Nextcloud (tags: opencloud, update-containers)
 │   ├── paperless/                    # document archive with OCR (tags: paperless, update-containers)
+│   ├── uptime_kuma/                  # service checks with Telegram alerts (tags: uptime-kuma, update-containers)
 │   ├── update_os/                    # package upgrades, reboot or report (tag: update-os)
 │   └── notify/                       # Telegram helper, a dependency of the roles that send messages
 ├── renovate.json                     # which image versions Renovate watches
@@ -61,6 +62,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `immich` | Immich in `/srv/docker/app/immich` on `photo.<domain>`: server, Postgres and Valkey, images pinned by tag and digest; **no machine learning** container. Only the server is on Traefik's network; the database and Valkey share an internal network with it. No container has Internet access. Read-only server with no capabilities; Postgres and Valkey keep only what their entrypoints need. A dump script for the backup runs `pg_dumpall` and checks the result; the live database directory is left out of the backup. |
 | `opencloud` | OpenCloud (production release line) in `/srv/docker/app/opencloud` on `cloud.<domain>`, image pinned by tag and digest, built-in user directory, PosixFS storage (files on disk as the user sees them, no database). Only on its internal network with Traefik, where Traefik also answers to `cloud.<domain>` so the login checks need no Internet access. Read-only container with no capabilities. Stopped during the nightly backup for a consistent copy, started again after it. No Collabora. |
 | `paperless` | Paperless-ngx in `/srv/docker/app/paperless` on `document.<domain>`: Paperless, Postgres 18 and Valkey, images pinned by tag and digest; OCR in Italian and English; no e-mail import, Tika or AI. Paperless runs as its image's own user (UID 1000, a subordinate ID on the host) with no capabilities; only it is on Traefik's network, the database and Valkey on an internal one; no Internet access. Originals stored as `<year>/<correspondent>/<title>`. A dump script for the backup runs `pg_dumpall`; the live database directory is left out. |
+| `uptime_kuma` | Uptime Kuma in `/srv/docker/app/uptime-kuma` on `health.<domain>`, image pinned by tag and digest (`slim-rootless`: runs as its own user, read-only, no capabilities, SQLite). It checks every service through Traefik under its public name (aliases on its network `proxy-uptime-kuma`) and alerts on Telegram, through its own network with Internet access. Monitors and notifications are set up in its web interface; a dump script for the backup copies its database. |
 | `update_os` | `apt dist-upgrade`; when a newer kernel is waiting or a package asks for a reboot, reboot (if allowed) or report it on Telegram; restart of the rootless daemon after a Docker upgrade. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 
@@ -69,7 +71,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
-| `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,opencloud,paperless,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
+| `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,opencloud,paperless,uptime-kuma,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
 | `--tags update-os` | Scheduled Semaphore job: upgrades; reports on Telegram when a reboot is needed (no automatic reboot on prod-srv-01). Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
@@ -129,6 +131,13 @@ For Immich you need `immich` in `traefik_networks` (run `--tags traefik` once af
 For OpenCloud you need `opencloud` in `traefik_networks` and in `traefik_network_aliases` (`opencloud: ["cloud.{{ traefik_domain }}"]`, already in `main.yml`; run `--tags traefik` once after adding them), a host override `cloud.greyroom.net` → services address in Unbound, and `vault_opencloud_admin_password` in the vault (`openssl rand -base64 24`). After the first run, log in at `https://cloud.greyroom.net` as `admin`, create the users under *Admin settings → Users*, and log in once as each user so that OpenCloud creates their personal space. Clients: the OpenCloud desktop and mobile apps. Moving from Nextcloud: maintenance guide, "Migrate the files from Nextcloud".
 
 For Paperless you need `paperless` in `traefik_networks` (run `--tags traefik` once after adding it), a host override `document.greyroom.net` → services address in Unbound, and in the vault `vault_paperless_db_password` (letters and digits: `openssl rand -hex 24`), `vault_paperless_secret_key` (`python3 -c "import secrets; print(secrets.token_urlsafe(64))"`) and `vault_paperless_admin_password`. The first start takes a few minutes (database setup). Log in at `https://document.greyroom.net` as `admin`, then create your own user under *Settings → Users & Groups* if you want one for every day. Uploads: drag files onto the web page, or the mobile app (e.g. "Paperless Mobile" on Android, "Swift Paperless" on iOS) with the server `https://document.greyroom.net`.
+
+For Uptime Kuma you need `uptime-kuma` in `traefik_networks` and its aliases in `traefik_network_aliases` (already in `main.yml`; run `--tags traefik` once after adding them) and a host override `health.greyroom.net` → services address in Unbound. Then, right after the first run (the first visitor creates the admin account):
+
+1. Open `https://health.greyroom.net` and create the admin account (a long password in Vaultwarden).
+2. *Settings → Notifications → Setup Notification*: type Telegram, the bot token and chat ID from the vault (`vault_telegram_bot_token`, `vault_telegram_chat_id`), *Default enabled* and *Apply on all existing monitors*; *Test*.
+3. *Settings → Reverse Proxy → Trusted Proxies*: Yes (the logins are logged with your address, not Traefik's).
+4. *Add New Monitor*, type HTTP(s), interval 60 s, *Certificate Expiry Notification* on, one for each service: `https://vault.greyroom.net/alive`, `https://photo.greyroom.net/api/server/ping`, `https://cloud.greyroom.net/status.php`, `https://document.greyroom.net/accounts/login/`. A name not in `traefik_network_aliases` cannot be checked: add it there first.
 
 For the backup you need, before the first run:
 
@@ -208,7 +217,7 @@ Every container service has its own directory, with its compose file, its data a
 /srv/docker/
 ├── system/        # infrastructure: traefik
 │   └── <name>/
-└── app/           # applications: vaultwarden, immich, opencloud, paperless
+└── app/           # applications: vaultwarden, immich, opencloud, paperless, uptime-kuma
     └── <name>/
 ```
 

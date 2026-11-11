@@ -24,7 +24,7 @@ Contents:
   ```text
   /srv/docker/
   ├── system/<name>/   # infrastructure: traefik
-  └── app/<name>/      # applications: vaultwarden, immich, opencloud, paperless
+  └── app/<name>/      # applications: vaultwarden, immich, opencloud, paperless, uptime-kuma
       ├── compose.yml  # written by Ansible
       ├── data/        # the service's data (bind mounts)
       └── dump/        # database dumps, for the backup (if it has a database)

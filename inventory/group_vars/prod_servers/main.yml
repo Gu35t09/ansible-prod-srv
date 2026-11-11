@@ -67,11 +67,18 @@ traefik_networks:
   - immich
   - opencloud
   - paperless
+  - uptime-kuma
 # OpenCloud checks logins against its own public URL: on its network that
 # name points to Traefik, so the container needs no route to the Internet.
+# Uptime Kuma checks every service through Traefik, under its public name.
 traefik_network_aliases:
   opencloud:
     - "cloud.{{ traefik_domain }}"
+  uptime-kuma:
+    - "vault.{{ traefik_domain }}"
+    - "photo.{{ traefik_domain }}"
+    - "cloud.{{ traefik_domain }}"
+    - "document.{{ traefik_domain }}"
 
 # --- Immich ---------------------------------------------------------------------
 immich_db_password: "{{ vault_immich_db_password | default('') }}"

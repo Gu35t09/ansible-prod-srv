@@ -25,12 +25,13 @@ Contents:
 17. [Role: immich](#17-role-immich)
 18. [Role: opencloud](#18-role-opencloud)
 19. [Role: paperless](#19-role-paperless)
-20. [Renovate (image updates)](#20-renovate-image-updates)
-21. [Role: update_os](#21-role-update_os)
-22. [The pre-commit hook](#22-the-pre-commit-hook)
-23. [Files the playbook creates on the server](#23-files-the-playbook-creates-on-the-server)
-24. [Known limits and points to review](#24-known-limits-and-points-to-review)
-25. [How it was tested](#25-how-it-was-tested)
+20. [Role: uptime_kuma](#20-role-uptime_kuma)
+21. [Renovate (image updates)](#21-renovate-image-updates)
+22. [Role: update_os](#22-role-update_os)
+23. [The pre-commit hook](#23-the-pre-commit-hook)
+24. [Files the playbook creates on the server](#24-files-the-playbook-creates-on-the-server)
+25. [Known limits and points to review](#25-known-limits-and-points-to-review)
+26. [How it was tested](#26-how-it-was-tested)
 
 ---
 
@@ -42,7 +43,7 @@ There is a single playbook, `site.yml`, with a single play that targets the `pro
 
 1. **Fact gathering** (`gather_facts: true`). Ansible collects information about the server (distribution, interfaces, architecture, virtualization) into `ansible_facts`. Several roles use these facts.
 2. **Pre-task "Check that the target runs Debian 13"**. It stops the play on any other system. It carries the `always` tag, so it also runs when you select other tags.
-3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`, `opencloud`, `paperless`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
+3. **Roles**, in order: `base`, `hardening`, `network`, `firewall_host`, `docker_rootless`, `clamav`, `monitoring`, `integrity`, `yara`, `backup`, then the container services (`traefik`, `vaultwarden`, `immich`, `opencloud`, `paperless`, `uptime_kuma`), then `update_os`. `notify` is not in the list: it runs as a dependency of `base`, `clamav`, `monitoring`, `integrity`, `yara` and `backup` (see their `meta/main.yml`), so it runs once, before `base`.
 
 The order matters:
 
@@ -64,6 +65,7 @@ The order matters:
 | `immich`, `update-containers` | immich |
 | `opencloud`, `update-containers` | opencloud |
 | `paperless`, `update-containers` | paperless |
+| `uptime-kuma`, `update-containers` | uptime_kuma |
 | `clamav` | clamav (+ notify) |
 | `monitoring` | monitoring (+ notify) |
 | `integrity` | integrity (+ notify) |
@@ -690,7 +692,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 ### The backup script (`/usr/local/sbin/backup`)
 
-1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden`, `immich` and `paperless`); `opencloud` adds one that stops it. If one fails, the run goes on with the previous dump and the report shows a warning.
+1. Runs the executable scripts in `/etc/backup/pre.d/` (`run-parts`). Each service role with a database adds one that dumps it under `/srv/docker/{system,app}/<name>/dump/` (today `vaultwarden`, `immich`, `paperless` and `uptime-kuma`); `opencloud` adds one that stops it. If one fails, the run goes on with the previous dump and the report shows a warning.
 2. **USB copy**: mounts `/dev/disk/by-label/<backup_usb_label>` on `/mnt/backup-usb` (`noexec,nosuid,nodev`), backs up to `/mnt/backup-usb/restic`, unmounts. If the disk was already mounted by hand, it leaves it mounted. A missing disk is a failure of this copy only.
 3. **S3 copy**: backs up to `s3:https://<endpoint>/<bucket>/<host name>`.
 4. For each copy: `restic backup` of `backup_paths` (missing paths skipped, `--exclude-caches`, plus `backup_exclude`), then `restic forget` with the retention (7 daily, 4 weekly, 12 monthly). On `backup_maintenance_weekday` (Sunday) it also runs `prune` and `restic check --read-data-subset 5%` (`backup_check_read_data_subset`): besides the structure and index, restic reads back a random 5% of the stored data and verifies it, so damaged data shows up within about five months, before a restore needs it. Reading part of the data costs no egress on R2 and adds a few minutes on the USB disk; `""` turns it off. Exit code 3 from restic (some files unreadable, snapshot saved anyway) is a warning, any other error a failure.
@@ -977,7 +979,48 @@ sudo /etc/backup/pre.d/paperless && sudo ls -l /srv/docker/app/paperless/dump/
 
 ---
 
-## 20. Renovate (image updates)
+## 20. Role: uptime_kuma
+
+Purpose: tell you on Telegram when a service stops answering, and when its certificate is close to expiry. It sits in `/srv/docker/app/uptime-kuma/`:
+
+| Path | Content |
+| --- | --- |
+| `compose.yml` | One container, `uptime-kuma` |
+| `data/` | The SQLite database: monitors, notifications, history, the admin account |
+| `dump/kuma.db` | SQLite online backup, written before each backup |
+
+**Check the Uptime Kuma settings** / **Look up the Docker service user** / **Check that rootless Docker is configured** / **Check that Traefik is configured** / **Stop if Traefik is missing**
+Stops if `traefik_domain` is empty, if `uptime-kuma` is not in `traefik_networks`, or if Docker or Traefik are not set up yet.
+
+**Read the service user's subordinate ID ranges** / **Check the subordinate ID ranges** / **Compute the host IDs of the container's UID 1000** / **Create the Uptime Kuma directories**
+The `slim-rootless` image runs as its own user, `node` (UID 1000): on the host, the subordinate range start plus 999, as for Paperless. `data/` (0750) and `dump/` (0700) belong to that ID.
+
+**Install the database dump script**
+`/etc/backup/pre.d/uptime-kuma`: SQLite's online backup with the `sqlite3` inside the image (`docker-svc exec`), then `PRAGMA integrity_check` before it replaces the previous dump.
+
+**Write the compose file** / **Start Uptime Kuma** / **Write the Traefik route**
+As for the other services; `Host(health.<domain>)` to `http://uptime-kuma:3001`. The health check is the image's own `/app/extra/healthcheck`.
+
+### Design choices
+
+- **Checks through Traefik, under the public names**: on `proxy-uptime-kuma`, Traefik carries the aliases `vault.`, `photo.`, `cloud.` and `document.<domain>` (`traefik_network_aliases`, as for OpenCloud). A check follows the same path as a browser: Traefik, the certificate and the application. A stopped container shows as an error (Traefik answers 502 or 504).
+- **No Docker socket**: Uptime Kuma could watch containers through it, but the socket is full control of every container. The HTTP checks cover the same failures.
+- **Internet only for the alerts**: a second network, `egress`, gives the container a way out, filtered by OPNsense like the rest of the server; Telegram is already allowed there. The services' names resolve to Traefik on `proxy-uptime-kuma` first (Docker's DNS answers for aliases on the container's networks).
+- **`slim-rootless` image**: no Chromium (no browser checks), no embedded MariaDB; it runs as `node`, read-only, with every capability dropped. About 110 MB of RAM.
+- **SQLite** (`UPTIME_KUMA_DB_TYPE=sqlite`): no database page at the first start, one file to back up.
+- **Set up in the web interface**: monitors and the Telegram notification are kept in the database, not in the repository; the dump puts them in the backup. Configuration as code would mean another tool (Gatus was the alternative considered).
+- **The first visitor creates the admin account**: open `https://health.<domain>` right after the first run.
+
+Check:
+
+```bash
+docker-svc ps --filter name=uptime-kuma --format '{{.Names}} {{.Status}}'    # healthy
+sudo /etc/backup/pre.d/uptime-kuma && sudo ls -l /srv/docker/app/uptime-kuma/dump/
+```
+
+---
+
+## 21. Renovate (image updates)
 
 Purpose: propose an update whenever a new version of a pinned image is released, with the release notes, and change nothing on its own. Three files, no role: Renovate does not run on the server.
 
@@ -1020,7 +1063,7 @@ Applying an update is the maintenance guide's "Image updates".
 
 ---
 
-## 21. Role: update_os
+## 22. Role: update_os
 
 Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
 
@@ -1052,13 +1095,13 @@ Container images are **not** updated here: they follow the `update-containers` t
 
 ---
 
-## 22. The pre-commit hook
+## 23. The pre-commit hook
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
 ---
 
-## 23. Files the playbook creates on the server
+## 24. Files the playbook creates on the server
 
 | Path | Role | Content |
 | --- | --- | --- |
@@ -1098,6 +1141,9 @@ Container images are **not** updated here: they follow the `update-containers` t
 | `/srv/docker/app/paperless/` | paperless | Compose file, documents, database, dump, secrets |
 | `/srv/docker/system/traefik/dynamic/paperless.yml` | paperless | Traefik route |
 | `/etc/backup/pre.d/paperless` | paperless | Database dump before the backup |
+| `/srv/docker/app/uptime-kuma/` | uptime_kuma | Compose file, database (monitors, notifications, history), dump |
+| `/srv/docker/system/traefik/dynamic/uptime-kuma.yml` | uptime_kuma | Traefik route |
+| `/etc/backup/pre.d/uptime-kuma` | uptime_kuma | Database dump before the backup |
 | `/etc/homelab/notify.env` | notify | Telegram token (0600) |
 | `/usr/local/sbin/notify-telegram` | notify | Notification helper |
 | `/usr/local/sbin/clamav-scan`, `/etc/systemd/system/clamav-scan.{service,timer}` | clamav | Scheduled scan |
@@ -1118,7 +1164,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 
 ---
 
-## 24. Known limits and points to review
+## 25. Known limits and points to review
 
 - **IPv6 is not configured.** nftables accepts ICMPv6, but SSH and service rules are IPv4 (`ip daddr`). With IPv6 on the VLANs, SSH and services would be reachable only over IPv4. That is fine as long as IPv6 is off on OPNsense for those networks.
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
@@ -1133,7 +1179,7 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **No full file integrity database (AIDE).** It would flag every security update that unattended-upgrades installs. The integrity role checks instead the specific things Ebury-style implants change, and the monthly `--check --diff` run catches drift in the managed files.
 - **The YARA rules change only when you refresh them** with `scripts/update-yara-rules.sh`; the server does not download them.
 - **The memory scan covers OpenSSH and suspicious processes only**, not every container process.
-- **One certificate for every name.** If the wildcard expires (DNS challenge failing for weeks), every service fails at once. Monitoring certificate expiry is an open point (Uptime Kuma).
+- **One certificate for every name.** If the wildcard expires (DNS challenge failing for weeks), every service fails at once. Uptime Kuma warns when the certificate is close to expiry.
 - **The dashboard is protected by a password only**; it is reachable only through WireGuard, like everything else.
 - **The backup is file-level.** Databases are consistent only through the dump scripts in `/etc/backup/pre.d/`; a database file copied while it is written may not restore. Every application role must add its dump script.
 - **A container escape reaches the Vaultwarden data.** Disk encryption (LUKS) protects only a server that is off or a disk that is removed; while Debian runs, files are readable by whoever has the permissions. Ordinary users cannot read `data/` (0700 `svc-docker`, inside a 0750 root:`svc-docker` directory). An escape from any container, though, lands as `svc-docker`, which owns the files of every container: it reads `db.sqlite3`, the dump and `rsa_key.pem`. Root needs a second exploit, in the kernel. What the database gives away:
@@ -1148,13 +1194,15 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **ClamAV and YARA scan the Immich library every night**, as the project document asks (user data in the volumes). With a large library the scans get long; YARA skips files over `yara_max_file_size_mb` (most videos). If the nightly scans run into the day, leave out `library/thumbs` and `library/encoded-video`, which Immich generates itself.
 - **Paperless opens untrusted files on the server**: OCR, Ghostscript and the PDF tools read every upload. Uploads come only from you, through WireGuard; e-mail import, which would let others send documents, is off.
 - **Paperless's files belong to a subordinate UID** on the host (container UID 1000). A restore with `restic` keeps the numeric owners; files copied in by hand need `chown` to that ID (maintenance guide).
+- **Uptime Kuma runs on the server it watches**: it reports a service that stops answering, not the whole server going down (power cut, a reboot waiting for the disk key). That shows as the missing 02:30 backup message on Telegram.
+- **Uptime Kuma is the only application with Internet access**, for the Telegram alerts: its own network `egress`, filtered by OPNsense like the rest of the server. Its monitors and its Telegram token live in its database, set up in the web interface, not in the repository.
 - **OpenCloud is stopped during the nightly backup**, for the duration of both copies (a few minutes; longer on the first run and on Sundays, with prune and check). Desktop clients retry by themselves.
 - **Immich's database password is set once.** Changing `vault_immich_db_password` alone breaks the connection: change it in Postgres first (maintenance guide).
 - **ClamAV uses 1–1.5 GB of RAM** for clamd. On an OptiPlex 3050 with 8 GB that is noticeable once Immich is running.
 
 ---
 
-## 25. How it was tested
+## 26. How it was tested
 
 On a Debian 13 VM (the official cloud image, switched to ifupdown to match a netinst install):
 

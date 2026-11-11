@@ -1,0 +1,13 @@
+---
+# Pinned by tag and digest: an update is a change in this file (Renovate),
+# applied with --tags update-containers. The slim-rootless image: no
+# Chromium or embedded MariaDB, runs as its own user (node, UID 1000).
+uptime_kuma_image: "docker.io/louislam/uptime-kuma:2.5.9-slim-rootless@sha256:053a48927ee714b1da78c6810041a44a266bd8c06dc30ead5b3f459d0f219fb0"
+
+docker_user: "svc-docker"
+uptime_kuma_dir: /srv/docker/app/uptime-kuma
+# Traefik reads the route from this directory (written by the traefik role).
+uptime_kuma_traefik_dynamic_dir: /srv/docker/system/traefik/dynamic
+
+uptime_kuma_host: "health.{{ traefik_domain }}"
+uptime_kuma_timezone: "{{ system_timezone | default('Etc/UTC') }}"

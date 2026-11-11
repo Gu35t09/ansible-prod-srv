@@ -377,6 +377,20 @@ sudo rm -rf /tmp/restore
 
 "current user cannot be dropped" and "role "paperless" already exists" are expected. Then log in and open a few documents; if the search finds nothing, rebuild the index: `docker-svc exec paperless document_index reindex`.
 
+### Restore Uptime Kuma
+
+Only its database matters: the monitors, the notification and the history. restic restores the numeric owners, so the file keeps the container user's subordinate UID.
+
+```bash
+docker-svc stop uptime-kuma
+sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/uptime-kuma/dump
+D=/srv/docker/app/uptime-kuma
+sudo rm -f $D/data/kuma.db-wal $D/data/kuma.db-shm
+sudo cp -p /tmp/restore$D/dump/kuma.db $D/data/kuma.db
+docker-svc start uptime-kuma
+sudo rm -rf /tmp/restore
+```
+
 ### Migrate the files from Nextcloud
 
 One time, for user `mattia` (the same steps for any other user). Nextcloud and the production server are on networks the laptop cannot reach at the same time, so the files go through the laptop as a tar file. Shares, versions, trash, calendars and contacts are not migrated.
@@ -648,6 +662,7 @@ This is also the yearly drill, on a lab VM.
 | Immich | `docker-svc logs immich_server` (lost when the container is recreated) |
 | OpenCloud | `docker-svc logs opencloud` (JSON, lost when the container is recreated) |
 | Paperless | `sudo ls /srv/docker/app/paperless/data/log/` (`paperless.log`, `celery.log`), and *Logs* in its web interface |
+| Uptime Kuma | `docker-svc logs uptime-kuma`; each monitor's history in its web interface |
 | Container status | `docker-svc ps` |
 | Renovate | *Actions → Renovate* on GitHub (one log per run), the Dependency Dashboard issue |
 | Backup | `journalctl -u backup.service`, `sudo backup usb snapshots`, `sudo backup s3 snapshots` |
