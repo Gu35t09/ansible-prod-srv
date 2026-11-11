@@ -129,7 +129,11 @@ For OpenCloud you need `opencloud` in `traefik_networks` and in `traefik_network
 For the backup you need, before the first run:
 
 - **The restic password** in the vault (`vault_restic_password`, e.g. `openssl rand -base64 33`). Write it on the emergency sheet as well: without it no backup can be read.
-- **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. Turn on **object lock or versioning** on the bucket (for example 30 days): the server holds a key that can delete, so this is what keeps a compromised server from erasing the history. Allow the endpoint on OPNsense.
+- **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. The server holds a key that can delete, so **lock the bucket against deletion** at the provider: that is what keeps a compromised server from erasing the history. With `backup_s3_append_only: true` restic never deletes from the bucket (no `forget`, no `prune`; the weekly `check` still runs). On Cloudflare R2, *bucket → Settings → Bucket lock rules → Add rule*, four rules with the retention **Age, 90 days**, prefixes:
+  - `prod-srv-01/data/` (the data), `prod-srv-01/snapshots/` (one file per backup), `prod-srv-01/keys/` (the encrypted master key: without it nothing can be read), `prod-srv-01/config`;
+  - not `prod-srv-01/locks/` (restic writes and deletes a lock file at every run) nor `prod-srv-01/index/` (restic can rebuild it from the data with `repair index`).
+
+  Turn `backup_s3_append_only` on and run `--tags backup` **before** adding the rules, or the nightly `forget` fails on locked snapshots. Allow the endpoint on OPNsense.
 - **The USB disk**, formatted once with the label the server looks for. This erases the disk:
   ```bash
   lsblk                                   # find the disk, e.g. /dev/sdb
@@ -180,6 +184,7 @@ Site-specific values are in `inventory/group_vars/prod_servers/main.yml`; every 
 | `backup_paths` | `/srv`, `/etc` | Containers keep compose file, data and dumps under `/srv/docker/{system,app}/<name>/`. |
 | `backup_exclude` | none; in `main.yml`: `/srv/docker/app/immich/postgres` | Live database directories: their dump scripts save them instead. |
 | `backup_s3_endpoint`, `backup_s3_bucket` | empty | Endpoint without `https://` (e.g. `s3.eu-central-003.backblazeb2.com`). The repository is `<bucket>/<host name>`. |
+| `backup_s3_append_only` | `false`; in `main.yml`: `true` | Never delete from the S3 copy (no `forget`, no `prune`): for a bucket locked against deletion. |
 | `backup_usb_label` | `backup-usb` | Filesystem label of the USB disk. |
 | `traefik_domain` | — | Wildcard certificate for `<domain>` and `*.<domain>`; the dashboard is `proxy.<domain>`. |
 | `traefik_networks` | empty | One name per service behind Traefik: the role creates the internal network `proxy-<name>` and attaches Traefik to it. |

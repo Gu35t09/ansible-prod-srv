@@ -36,5 +36,9 @@ backup_s3_prefix: "{{ inventory_hostname }}"
 backup_s3_region: ""            # only if the provider requires it
 backup_s3_access_key: ""
 backup_s3_secret_key: ""
+# true: never delete from the S3 copy (no forget, no prune; the weekly check
+# still runs). For a bucket whose objects the provider locks against deletion
+# (R2 bucket locks, S3 object lock): restic's deletions would fail there.
+backup_s3_append_only: false
 
 backup_env_file: /etc/homelab/backup.env

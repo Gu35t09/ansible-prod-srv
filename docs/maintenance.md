@@ -77,7 +77,7 @@ Nothing in this list reboots the server or updates container images. Container i
 - Test that notifications work end to end: `sudo notify-telegram "Quarterly test from $(hostname)"`.
 - Run the EICAR test from `verify.md` section 8, and the YARA one from section 12.
 - **Restore test**: restore one service directory (`/srv/docker/app/<name>`) from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
-- Check that object lock or versioning is still on for the bucket, and look at its size and cost.
+- Check that the four bucket lock rules (90 days) are still on in the R2 dashboard, and look at the bucket's size and cost.
 - Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
 - Check that the copy of the emergency secrets is still readable and up to date (backup password, Ansible Vault password, the admin user's console password).
 
@@ -430,7 +430,19 @@ Update `vault_traefik_dashboard_users` (new htpasswd line, see the README) or `v
 ### Change the backup password or the S3 key
 
 - **S3 key**: create the new key at the provider, update the vault, run `--tags backup`, revoke the old key.
-- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from each copy (`sudo backup <copy> key list`, `sudo backup <copy> key remove <ID>`). Update the emergency sheet.
+- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from the USB copy (`sudo backup usb key list`, `sudo backup usb key remove <ID>`). On S3 the old key file is locked for 90 days after it was written: remove it there once it is older than that, or leave it (it still opens the repository with the old password, so keep that password safe until then). Update the emergency sheet.
+
+### Clean up the S3 copy (optional)
+
+The S3 copy is append-only and keeps every daily snapshot. If its size starts to cost, clean it up by hand, deleting only what is older than the 90-day lock:
+
+```bash
+sudo backup s3 forget --keep-within 100d --keep-monthly 24
+sudo backup s3 prune
+```
+
+`--keep-within 100d` keeps every snapshot of the last 100 days, so `forget` never touches a locked file. `prune` rewrites the index (not locked) and deletes data no snapshot uses; an error on a recent data file means the lock refused it, and the next clean-up removes it.
+
 
 ### Change the network (VLANs, addresses)
 

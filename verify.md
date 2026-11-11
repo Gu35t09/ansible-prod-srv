@@ -173,6 +173,16 @@ sudo backup s3 restore latest --target /tmp/restore-s3 --include /etc/hostname &
 sudo rm -rf /tmp/restore /tmp/restore-s3
 ```
 
+S3 bucket lock (after adding the rules): a tiny test snapshot that the server must not be able to delete.
+
+```bash
+sudo backup s3 backup /etc/hostname --tag locktest              # "snapshot <ID> saved"
+sudo backup s3 forget <ID>                                       # must fail: access denied on snapshots/<ID>
+sudo backup s3 snapshots --tag locktest                          # the snapshot is still there
+```
+
+The test snapshot stays (a few bytes; it can be removed after 90 days). The nightly report for S3 ends with "append-only".
+
 To test the failure message, unplug the USB disk and start the backup: `❌ BACKUP FAILED` with "USB disk not connected", and the S3 copy still saved.
 
 ## 14. Traefik
