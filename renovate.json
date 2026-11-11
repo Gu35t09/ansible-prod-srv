@@ -45,12 +45,18 @@
   ],
   "packageRules": [
     {
-      "description": "Immich: server and Valkey in one PR; read the release notes before merging",
-      "matchPackageNames": [
-        "ghcr.io/immich-app/immich-server",
-        "docker.io/valkey/valkey"
+      "description": "Immich (server, Valkey, its Postgres digest) in one PR; read the release notes before merging. Grouped by file, so an image shared with another service (Valkey) gets one PR per service.",
+      "matchFileNames": [
+        "roles/immich/**"
       ],
       "groupName": "Immich"
+    },
+    {
+      "description": "Paperless, its Postgres (minor and patch) and Valkey in one PR.",
+      "matchFileNames": [
+        "roles/paperless/**"
+      ],
+      "groupName": "Paperless"
     },
     {
       "description": "Postgres major versions (Immich's tag follows the Immich release; every major needs a dump and restore): listed under Pending Approval in the Dependency Dashboard and in the Telegram message, never opened as a PR. Do the upgrade by hand; do not tick the box.",

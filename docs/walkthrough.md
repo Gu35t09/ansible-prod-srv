@@ -1006,7 +1006,7 @@ One line, `ghcr.io/renovatebot/renovate:44`. The major tag, not a pinned version
 | Custom regex manager on `.github/renovate-image` | Renovate's own image, major tag only: a new major is a normal PR. |
 | `minimumReleaseAge: 3 days` | A release must be 3 days old before Renovate proposes it: broken releases are usually replaced by then. |
 | `minimumReleaseAgeBehaviour: timestamp-optional` | ghcr.io gives no release date. With the default, Immich updates would be held forever; with this, they are proposed without the wait. |
-| Group "Immich" | Immich server and Valkey in one PR. |
+| Groups "Immich" and "Paperless" | One PR per service, by file (`roles/immich/**`, `roles/paperless/**`): an image both use (Valkey) gets one PR in each service's group, never a PR named after the other service. A Postgres major in a group is the group's "major" update (e.g. "Update Immich (major)"), still under Pending Approval. |
 | Postgres majors: `dependencyDashboardApproval` | Any image with `postgres` in its name. A major is listed under Pending Approval and in the Telegram message, never opened as a PR: Immich's tag follows the Immich release's `docker-compose.yml`, and every major needs a dump and restore. Digest updates of the same tag are normal PRs. |
 | Workflow file (`github-actions`): majors with `dependencyDashboardApproval`, the rest off | The runner image: listed only, because the `GITHUB_TOKEN` cannot edit workflow files. |
 | `automerge: false` | Written out although it is the default: nothing is ever merged by Renovate. The `protect main` ruleset (README, "Image updates") makes GitHub refuse it anyway. |
