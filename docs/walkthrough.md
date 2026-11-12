@@ -205,7 +205,7 @@ It holds the secrets, all with the `vault_` prefix: the Telegram token and chat 
 
 ## 4. Role: base
 
-Purpose: the common foundation, meaning packages, time, logs and automatic security updates.
+Purpose: the common foundation, meaning packages, time, logs and automatic updates.
 
 **Set the hostname** / **Map the hostname to the loopback address**
 Sets the host name through systemd and maps it to `127.0.1.1` in `/etc/hosts`, as the Debian installer does. Without that line, `sudo` prints "unable to resolve host" whenever the name changes. Both tasks are skipped if `server_hostname` is empty.
@@ -237,25 +237,27 @@ Check: `timedatectl show --property=NTP --property=NTPSynchronized`.
 Logs are kept across reboots (`Storage=persistent`) and limited to `journald_max_use` (500 MB), so they cannot fill the single disk.
 Check: `journalctl --disk-usage`.
 
-**Restrict unattended-upgrades to Debian security updates**
+**Choose what unattended-upgrades installs**
 Writes `/etc/apt/apt.conf.d/52unattended-upgrades-local`. APT reads the files in that directory in alphabetical order, so `52` comes after Debian's `50unattended-upgrades`.
 
-- `#clear Unattended-Upgrade::Origins-Pattern;` empties the origin list defined in `50`. Without it, the list in `52` would be *added* to Debian's defaults and normal stable updates would be installed too. This was a real bug found during testing.
-- The only allowed origin is `trixie-security`.
+- `#clear Unattended-Upgrade::Origins-Pattern;` empties the origin list defined in `50`, so that only the list in `52` (`base_unattended_origins`) applies. Without it the two lists would add up. This was a real bug found during testing.
+- The allowed origins: Debian `trixie` (point releases), `trixie-updates` and `trixie-security`, and Docker's repository (`origin=Docker,label=Docker CE,archive=trixie`, from its `Release` file). Not backports or proposed updates. Until November 2026 only security updates were installed by themselves and the rest waited for `update-os`; with no scheduler for that job (Semaphore is not deployed), Debian's other updates and Docker's never arrived.
+- **Docker's packages and the rootful daemon.** On an upgrade, `docker-ce` and `containerd.io` call `deb-systemd-invoke restart docker.service docker.socket` (and `containerd.service`). On Debian 13 (init-system-helpers 1.69) that skips a unit that is disabled and not running, and `deb-systemd-helper` only re-enables a unit that was enabled: the units the docker_rootless role disabled stay off. The report checks it after every Docker upgrade anyway.
 - `Automatic-Reboot "false"`: the server never reboots by itself. The disk is encrypted and its passphrase is typed at the console, so reboots are always done by hand.
 
 Check: `sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'`.
 
-**Enable the daily unattended-upgrades run**
-Turns on the daily list update and the unattended upgrade (APT timers `apt-daily` and `apt-daily-upgrade`).
+**Enable the daily unattended-upgrades run** / **Schedule the apt jobs**
+Turns on the daily list update and the unattended upgrade (APT timers `apt-daily` and `apt-daily-upgrade`). Drop-ins in `/etc/systemd/system/apt-daily{,-upgrade}.timer.d/50-schedule.conf` replace Debian's schedule (06:00 and 06:00/18:00 with random delays) with fixed times at night: lists at 03:45 (`base_apt_update_on_calendar`), upgrade at 04:00 (`base_apt_upgrade_on_calendar`), after the backup and the Saturday SMART long test. A change reloads systemd and restarts the two timers (**Restart the apt timers**): a timer picks up a new schedule only then.
 
 **Install the unattended-upgrades report** / **Create the drop-in directories of the apt jobs** / **Report after each apt job**
 `/usr/local/sbin/unattended-upgrades-report`, called by systemd through `ExecStopPost=` drop-ins (`/etc/systemd/system/apt-daily{,-upgrade}.service.d/50-telegram.conf`). `ExecStopPost` runs when the job ends, whatever its result, with `SERVICE_RESULT` set; both units are `Type=oneshot`. A change reloads systemd (**Reload systemd**).
 
 - After `apt-daily-upgrade.service` (`upgrade`): one Telegram message per unattended-upgrades run. It reads the last run of `/var/log/unattended-upgrades/unattended-upgrades.log` (from the last "Starting unattended upgrades script" line) and reports "N PACKAGE(S) UPGRADED" with the list, "NOTHING TO INSTALL", or "ERRORS" with the `ERROR` lines; kept-back and auto-removed packages are added. If the service itself failed, "JOB FAILED" with the last lines of its journal. Then whether a reboot is needed: `needrestart -b -k` (a newer kernel installed) or `/run/reboot-required` (some packages), with the reminder that the reboot is by hand. `apt.systemd.daily` runs unattended-upgrades at most once a day: if the log has no new run (`/var/lib/unattended-upgrades-report/last-run` keeps the last one reported), nothing is sent.
+- **After a Docker upgrade** (`docker-ce`, `docker-ce-rootless-extras` or `containerd.io` in the list), before the message: the rootless daemon still runs the old binaries, so the script restarts it (`systemctl --user restart docker.service` as `svc-docker`), then checks every 10 seconds, for up to `base_docker_restart_wait` (300 s), that each container that was running before is running again and, when it has a health check, healthy. The message says "🐳 Docker upgraded … N containers running again after X s", or the title becomes "DOCKER NEEDS ATTENTION" with the containers not back. It also checks that the rootful daemon is still off. `apt-daily-upgrade.service` has `TimeoutStopSec=900`, so the wait fits in its `ExecStopPost`.
 - After `apt-daily.service` (`update`): a message only if the package lists could not be downloaded. Without new lists, unattended-upgrades would report "nothing to install" while security updates exist.
 
-The script was tested with sample logs in unattended-upgrades 2.12's format (Debian 13): packages upgraded with a newer kernel, nothing to install, errors with `/run/reboot-required`, the same run twice, the service failed, the list download failed and succeeded.
+The script was tested with sample logs in unattended-upgrades 2.12's format (Debian 13): packages upgraded with a newer kernel, nothing to install, errors with `/run/reboot-required`, the same run twice, the service failed, the list download failed and succeeded. The Docker restart was tested with stand-in `docker-svc`, `systemctl` and `runuser`: every container back, one container unhealthy past the wait, the rootful daemon running, no Docker package upgraded.
 
 **Configure needrestart to restart services after upgrades**
 `$nrconf{restart} = 'a'` makes needrestart restart affected services automatically. The Debian default is interactive mode, which does nothing in a non-interactive upgrade. It does not reboot for the kernel: that is handled by `update_os`.
@@ -283,7 +285,7 @@ Creates the user (or leaves it as is), adds it to the `sudo` group with `append:
 `exclusive: true` makes `~/.ssh/authorized_keys` contain **exactly** the listed keys. A key added by hand on the server is removed at the next run. This is intentional: the repository is the only source of truth for access.
 
 **Allow the administrative user to use sudo without a password**
-Writes `/etc/sudoers.d/90-admin` with `NOPASSWD: ALL` for `admin_user` only. It is passwordless because Ansible and Semaphore use sudo non-interactively and the user has no password (keys only). `validate: visudo -cf %s` checks the syntax before installing the file: a broken sudoers file would make sudo unusable.
+Writes `/etc/sudoers.d/90-admin` with `NOPASSWD: ALL` for `admin_user` only. It is passwordless because Ansible uses sudo non-interactively and the user has no password (keys only). `validate: visudo -cf %s` checks the syntax before installing the file: a broken sudoers file would make sudo unusable.
 
 **Configure the OpenSSH hardening drop-in**
 Template `templates/sshd_hardening.conf.j2` → `/etc/ssh/sshd_config.d/00-hardening.conf`. In sshd **the first occurrence of each directive wins**, and Debian 13 includes `sshd_config.d/*.conf` at the top of `sshd_config`, so this drop-in beats every later line. `validate: sshd -t -f %s` tests it before it is written.
@@ -514,7 +516,7 @@ Purpose: a single place that sends notifications and holds the token.
 If notifications are enabled and the token or chat ID is empty (vault missing or incomplete), the play stops with an explicit message.
 
 **Create the configuration directory** / **Write the notification credentials**
-`/etc/homelab/` (0700) and `notify.env` (0600, root): the only file on the server containing the token. `no_log: true` keeps the token out of Ansible's output and out of Semaphore's logs. Values go through `| quote`, so special characters cannot break the file when the shell sources it.
+`/etc/homelab/` (0700) and `notify.env` (0600, root): the only file on the server containing the token. `no_log: true` keeps the token out of Ansible's output. Values go through `| quote`, so special characters cannot break the file when the shell sources it.
 
 **Install the notification helper**
 `/usr/local/sbin/notify-telegram` (0750, root). Accepts the message as an argument or on stdin.
@@ -688,7 +690,7 @@ The Debian package (0.18 on Debian 13). Root-only directories: `/etc/backup/pre.
 `backup --init` creates a repository only when restic says it does not exist (exit code 10), and prints one line per copy. If the USB disk is not plugged in, it skips it without failing: run `sudo backup --init` once it is connected. The nightly run never creates a repository: if one disappears, the run fails and says so, instead of quietly starting an empty one.
 
 **Install the backup service and timer** / **Enable the scheduled backup**
-Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have started and before the long SMART test and the `update-os` job.
+Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have started and before the long SMART test and the nightly unattended-upgrades run (04:00).
 
 ### The backup script (`/usr/local/sbin/backup`)
 
@@ -1065,7 +1067,7 @@ Applying an update is the maintenance guide's "Image updates".
 
 ## 22. Role: update_os
 
-Purpose: the Semaphore job that keeps the system up to date. It runs only with `--tags update-os`.
+Purpose: a full upgrade, run by hand with `--tags update-os`. unattended-upgrades installs Debian's and Docker's updates every night (role `base`); this tag is for what it keeps back (a package that needs new dependencies, shown as "Kept back" in its report), with the same reboot check.
 
 **Record the installed package versions** / **Keep the Docker version before the upgrade**
 Notes the `docker-ce` version before the upgrade.
@@ -1089,7 +1091,7 @@ Reboots if either signal says so and `update_os_allow_reboot` is true. Otherwise
 If `docker-ce` changed and there was no reboot, it restarts the rootless daemon: the new binary takes effect only on restart. Containers come back through their restart policy. It is skipped if the user does not exist (Docker not yet configured).
 
 **Check that the rootless Docker daemon is running**
-After an upgrade or a reboot, waits until the user `docker.service` is active again. If it fails, the Semaphore job fails and you can see it.
+After an upgrade or a reboot, waits until the user `docker.service` is active again. If it fails, the playbook fails.
 
 Container images are **not** updated here: they follow the `update-containers` tag, with the versions pinned in the repository and proposed by Renovate.
 
@@ -1107,7 +1109,8 @@ Container images are **not** updated here: they follow the `update-containers` t
 | --- | --- | --- |
 | `/etc/systemd/timesyncd.conf.d/10-local.conf` | base | NTP servers |
 | `/etc/systemd/journald.conf.d/10-size.conf` | base | Journal size |
-| `/etc/apt/apt.conf.d/52unattended-upgrades-local` | base | Security origins only |
+| `/etc/apt/apt.conf.d/52unattended-upgrades-local` | base | Origins installed every night (Debian stable, updates, security; Docker) |
+| `/etc/systemd/system/apt-daily{,-upgrade}.timer.d/50-schedule.conf` | base | Apt jobs at 03:45 and 04:00 |
 | `/usr/local/sbin/unattended-upgrades-report`, `/etc/systemd/system/apt-daily{,-upgrade}.service.d/50-telegram.conf` | base | Telegram report after each apt job |
 | `/var/lib/unattended-upgrades-report/last-run` | base | Last unattended-upgrades run reported |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | base | Daily automatic updates |
@@ -1170,8 +1173,9 @@ Each file begins with a "Managed by Ansible" comment: changes made by hand are o
 - **`AllowTcpForwarding no`** disables SSH tunnels. To reach a service from outside, use WireGuard.
 - **`ip_unprivileged_port_start=80`** applies to every user, not just `svc-docker`.
 - **`kernel.unprivileged_bpf_disabled=1`** cannot be undone without a reboot.
-- **The admin's sudo is passwordless**: whoever has the admin's SSH key, or Semaphore's, is root. Protect both keys accordingly (see the open point on Semaphore in the project document).
+- **The admin's sudo is passwordless**: whoever has the admin's SSH key is root. Protect it accordingly: it lives on the laptop the playbook runs from.
 - **The network role reboots** whenever the configuration changes. Run it in a maintenance window, **at the console**: the disk is encrypted, so the server waits for the passphrase after the reboot, and Ansible's 240 s wait to reconnect (and the 5-minute rollback, which starts only once the system is up) assume someone types it promptly. The same applies to the automatic rollback reboot.
+- **Docker upgrades restart every container at night.** unattended-upgrades installs Docker's packages at 04:00 and the report restarts the rootless daemon: the services are down for a minute or two, and a Docker release that breaks something is installed without review (the report says which containers did not come back; maintenance guide, "Docker needs attention").
 - **The encrypted disk means no unattended reboot.** After a power cut the server stays at the passphrase prompt until someone types it: services, backups and notifications stop meanwhile. `update_os_allow_reboot` is false for this reason. Remote unlock (dropbear in the initramfs, or Clevis/Tang) is possible but not set up.
 - **`/etc/resolv.conf`** is written only by the network role. Before you run it, the server keeps the DNS servers set by the installer.
 - **The Docker key checksum** is pinned. If Docker ever rotates its key, the task fails on purpose: check the new fingerprint on docs.docker.com, then update `docker_apt_key_checksum`.

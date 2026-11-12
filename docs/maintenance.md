@@ -10,7 +10,7 @@ Contents:
 
 1. [What runs by itself](#1-what-runs-by-itself)
 2. [Maintenance calendar](#2-maintenance-calendar)
-3. [Semaphore setup](#3-semaphore-setup)
+3. [Running the playbook](#3-running-the-playbook)
 4. [Responding to notifications](#4-responding-to-notifications)
 5. [Routine procedures](#5-routine-procedures)
 6. [Troubleshooting](#6-troubleshooting)
@@ -23,8 +23,9 @@ Contents:
 
 | What | When | Where it reports |
 | --- | --- | --- |
-| Debian security updates (unattended-upgrades) | Daily (`apt-daily-upgrade.timer`, around 06:00–07:00) | Telegram at every run: packages upgraded, nothing to install, or errors, and whether a reboot is needed |
-| Package list download (`apt-daily`) | Twice a day | Telegram only if it fails |
+| Package updates (unattended-upgrades): Debian stable, updates and security, and Docker | Daily at 04:00 (`apt-daily-upgrade.timer`) | Telegram at every run: packages upgraded, nothing to install, or errors, and whether a reboot is needed |
+| Rootless Docker restart after a Docker upgrade, then a wait for every container | In the same run | The same Telegram message: "🐳 Docker upgraded" or "❌ … DOCKER NEEDS ATTENTION" |
+| Package list download (`apt-daily`) | Daily at 03:45 | Telegram only if it fails |
 | Service restarts after an upgrade (needrestart) | After each upgrade | journal |
 | ClamAV signature updates (freshclam) | Several times a day | `journalctl -u clamav-freshclam` |
 | ClamAV scan | Daily at 00:00 | Telegram |
@@ -35,7 +36,7 @@ Contents:
 | Backup to the USB disk and S3 (restic) | Daily at 02:30; prune and check on Sundays (5% of the data read back each time); OpenCloud is stopped while it runs | Telegram at every run |
 | Renovate (on GitHub, not on the server) | Saturday morning | Telegram when there are new PRs, updates to do by hand, or a run that did not finish |
 
-Nothing in this list reboots the server or updates container images. Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
+Nothing in this list reboots the server or updates container images (a Docker upgrade restarts the containers, with the same images). Container images change only through `update-containers`; the server is rebooted only by you, by hand: the disk is encrypted and its passphrase is typed at the console at every boot (`update_os_allow_reboot: false`).
 
 ## 2. Maintenance calendar
 
@@ -45,12 +46,11 @@ Nothing in this list reboots the server or updates container images. Container i
 
 ### Every week
 
-- The scheduled `update-os` job runs in Semaphore. Check that it ended green; if it failed, see [update-os failed](#update-os-failed).
 - Saturday morning: if the Telegram message "🔄 RENOVATE" arrived, review the PRs (see [Image updates](#image-updates)). A "❌ RENOVATE DID NOT FINISH" message gives Renovate's result and links to the run log; run it again with *Actions → Renovate → Run workflow* once the cause is fixed (a temporary error such as `repository-changed` usually needs nothing).
 
 ### Every month
 
-- Run the full playbook from Semaphore or the laptop. On an unchanged server it must report `changed=0`. Anything else means someone changed the server by hand, or the playbook changed: read the diff before accepting it.
+- Run the full playbook from the laptop. On an unchanged server it must report `changed=0`. Anything else means someone changed the server by hand, or the playbook changed: read the diff before accepting it.
   ```bash
   ansible-playbook site.yml --check --diff --ask-vault-pass
   ```
@@ -88,20 +88,31 @@ Nothing in this list reboots the server or updates container images. Container i
 - Review the SSH keys in `admin_ssh_keys` and remove the ones from devices you no longer use.
 - Rotate the Telegram token (see [Rotate the Telegram token](#rotate-the-telegram-token): it is also a GitHub secret) and the Cloudflare token.
 
-## 3. Semaphore setup
+## 3. Running the playbook
 
-| Template | Command | Schedule |
+The playbook runs from the laptop, by hand; nothing outside the server is scheduled. The updates run on the server itself (section 1).
+
+| What | Command | When |
 | --- | --- | --- |
-| Configure server | `site.yml` | Manual, and monthly as a drift check |
-| Drift check | `site.yml --check --diff` | Optional, weekly |
-| Update OS | `site.yml --tags update-os` | Weekly, at night (e.g. Sunday 04:00, away from the 00:00 scan and the 02:00–03:00 SMART tests) |
-| Network | `site.yml --tags network` | **Manual only**, never scheduled |
+| Configure the server | `site.yml` | After a change to the repository |
+| Drift check | `site.yml --check --diff` | Monthly: `changed=0` on an unchanged server |
+| Container images | `site.yml --tags update-containers` | After merging a Renovate PR |
+| Full upgrade | `site.yml --tags update-os` | Rarely: when the morning report lists packages under "Kept back" |
+| Network | `site.yml --tags network` | **By hand only** |
 
-Store the vault password and Semaphore's SSH key in the Key Store. Semaphore's key gives root on the server: treat the Semaphore host as part of production.
+The laptop holds the SSH key that becomes root on the server and types the vault password: treat it as part of production (encrypted disk, a passphrase on the key, screen lock).
 
-Turn on Semaphore's notifications for failed tasks, or a failed `update-os` job can go unnoticed for a week.
+Semaphore is not deployed: it would need a host of its own, outside the server it manages and outside OPNsense. If it is added later, give it the vault password and its own SSH key in its Key Store, and turn on its notifications for failed tasks.
 
 ## 4. Responding to notifications
+
+### Docker needs attention
+
+Message: `❌ UNATTENDED-UPGRADES: DOCKER NEEDS ATTENTION`, after Docker's packages were upgraded at night.
+
+- **"the rootless daemon did not restart"**: see [Rootless Docker does not start](#rootless-docker-does-not-start).
+- **"these containers are not back"**: the daemon runs, but the named containers are not running or not healthy five minutes later. `docker-svc ps -a`, then `docker-svc logs <name>`. A container that depends on its database (Immich, Paperless) can need a second start: `docker-svc restart <name>`. If the new Docker version breaks something, run the service's tag again (`--tags <service>`) and report it; going back to the previous Docker version: `sudo apt install docker-ce=<version> docker-ce-cli=<version>` (`apt-cache madison docker-ce`), then `docker-svc` restart as in the message.
+- **"The rootful Docker daemon is running"**: it must stay off, only the rootless one runs. `sudo systemctl disable --now docker.socket docker.service containerd.service`, then run `--tags docker` and find out what started it.
 
 ### Malware detected
 
@@ -264,7 +275,7 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 ansible-vault rekey inventory/group_vars/prod_servers/vault.yml
 ```
 
-Then update the password in Semaphore's Key Store and in the offline copy of the emergency secrets.
+Then update the password in the offline copy of the emergency secrets.
 
 ### Change the scan schedule, the paths or the disk threshold
 
@@ -525,7 +536,7 @@ If **Download the Docker repository key** fails on the checksum:
 
 ### update-os failed
 
-Read the Semaphore output, then:
+Read the playbook output, then:
 
 | Failed task | Likely cause | What to do |
 | --- | --- | --- |

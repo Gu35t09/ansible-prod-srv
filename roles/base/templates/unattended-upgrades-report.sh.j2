@@ -4,7 +4,9 @@
 # (ExecStopPost in the apt-daily*.service drop-ins), whatever its result.
 #   unattended-upgrades-report upgrade   after apt-daily-upgrade.service: one
 #       message per unattended-upgrades run (installed, nothing, errors) and
-#       whether a reboot is needed
+#       whether a reboot is needed. When Docker's packages were upgraded, it
+#       restarts the rootless daemon first and reports whether every
+#       container came back.
 #   unattended-upgrades-report update    after apt-daily.service: a message
 #       only if the package lists could not be downloaded
 # systemd sets SERVICE_RESULT, EXIT_CODE and EXIT_STATUS for ExecStopPost.
@@ -17,6 +19,8 @@ MODE=${1:-upgrade}
 LOG=/var/log/unattended-upgrades/unattended-upgrades.log
 STATE_DIR=/var/lib/unattended-upgrades-report
 STATE_FILE=$STATE_DIR/last-run
+DOCKER_USER={{ docker_user | quote }}
+DOCKER_WAIT={{ base_docker_restart_wait | int }}
 HOST=$(hostname)
 RESULT=${SERVICE_RESULT:-unknown}
 
@@ -57,6 +61,59 @@ reboot_note() {
         printf '\n\n🔁 REBOOT REQUIRED: %s.\nThe disk is encrypted: reboot by hand when you can type the passphrase (sudo reboot).' "$note"
     fi
 }
+
+{% raw %}
+# Docker's packages were upgraded: the rootless daemon still runs the old
+# binaries until it restarts. Restart it, then wait until every container
+# that was running is running again and, when it has a health check, healthy
+# (restart policies bring them back). Sets DOCKER_NOTE and DOCKER_FAILED.
+DOCKER_NOTE=""
+DOCKER_FAILED=false
+docker_restart() {
+    local uid before name status pending="" waited=0
+    grep -qxE 'docker-ce|docker-ce-rootless-extras|containerd\.io' <<<"$upgraded" || return 0
+    if ! uid=$(id -u "$DOCKER_USER" 2>/dev/null) || [ ! -x /usr/local/bin/docker-svc ]; then
+        DOCKER_NOTE="🐳 Docker upgraded, but no rootless Docker for ${DOCKER_USER}: nothing restarted."
+        return 0
+    fi
+
+    before=$(/usr/local/bin/docker-svc ps --format '{{.Names}}' 2>/dev/null | sort)
+    if ! runuser -u "$DOCKER_USER" -- env XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user restart docker.service; then
+        DOCKER_FAILED=true
+        DOCKER_NOTE="❌ DOCKER: the rootless daemon did not restart after the upgrade. Check: sudo -u ${DOCKER_USER} XDG_RUNTIME_DIR=/run/user/${uid} systemctl --user status docker.service"
+        return 0
+    fi
+
+    while [ "$waited" -lt "$DOCKER_WAIT" ]; do
+        sleep 10
+        waited=$((waited + 10))
+        pending=""
+        for name in $before; do
+            status=$(/usr/local/bin/docker-svc inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name" 2>/dev/null)
+            case "$status" in
+                "running healthy" | "running none") ;;
+                *) pending+="${name} (${status:-not found}) " ;;
+            esac
+        done
+        [ -z "$pending" ] && break
+    done
+
+    if [ -n "$pending" ]; then
+        DOCKER_FAILED=true
+        DOCKER_NOTE="❌ DOCKER: daemon restarted after the upgrade, but after ${DOCKER_WAIT} s these containers are not back: ${pending% }. Check: docker-svc ps -a, docker-svc logs <name>"
+    else
+        DOCKER_NOTE="🐳 Docker upgraded: rootless daemon restarted, $(grep -c . <<<"$before") containers running again after ${waited} s."
+    fi
+
+    # The packages restart the rootful daemon only when it is enabled or
+    # running: it must stay off.
+    if systemctl is-active --quiet docker.service docker.socket containerd.service; then
+        DOCKER_FAILED=true
+        DOCKER_NOTE="${DOCKER_NOTE}
+❌ The rootful Docker daemon is running: it must stay off (sudo systemctl disable --now docker.socket docker.service containerd.service)."
+    fi
+}
+{% endraw %}
 
 if [ "$MODE" = "update" ]; then
     [ "$RESULT" = "success" ] && exit 0
@@ -103,6 +160,7 @@ upgraded=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that will be upgraded: //p'
 kept=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that are kept back: //p' <<<"$block")
 removed=$(sed -n 's/^[0-9-]* [0-9:,]* INFO Packages that were successfully auto-removed: //p' <<<"$block")
 count=$(grep -c . <<<"$upgraded")
+docker_restart
 
 if [ -n "$errors" ]; then
     title="❌ UNATTENDED-UPGRADES: ERRORS"
@@ -120,12 +178,18 @@ elif [ "$count" -gt 0 ]; then
     body="• ${upgraded//$'\n'/$'\n'• }"
 elif grep -q 'No packages found that can be upgraded unattended' <<<"$block"; then
     title="✅ UNATTENDED-UPGRADES: NOTHING TO INSTALL"
-    body="No security update is waiting."
+    body="No update is waiting."
 else
     title="⚠️ UNATTENDED-UPGRADES: UNEXPECTED RESULT"
     body="The run neither installed packages nor reported that there was nothing to do. Last lines:
 $(tail -n 5 <<<"$block" | cut -d' ' -f3-)"
 fi
+if [ "$DOCKER_FAILED" = true ] && [ -z "$errors" ]; then
+    title="❌ UNATTENDED-UPGRADES: DOCKER NEEDS ATTENTION"
+fi
+[ -n "$DOCKER_NOTE" ] && body="${body}
+
+${DOCKER_NOTE}"
 [ -n "$kept" ] && body="${body}
 
 Kept back: ${kept}"
