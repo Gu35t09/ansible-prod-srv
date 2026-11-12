@@ -79,7 +79,7 @@ Nothing in this list reboots the server or updates container images (a Docker up
 - **Restore test**: restore one service directory (`/srv/docker/app/<name>`) from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
 - Check that the four bucket lock rules (90 days) are still on in the R2 dashboard, and look at the bucket's size and cost.
 - Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
-- Check that the copy of the emergency secrets is still readable and up to date (backup password, Ansible Vault password, the admin user's console password).
+- Check the emergency secrets key and refresh the Vaultwarden export on it (see [Emergency secrets key](#emergency-secrets-key)).
 
 ### Every year
 
@@ -275,7 +275,7 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 ansible-vault rekey inventory/group_vars/prod_servers/vault.yml
 ```
 
-Then update the password in the offline copy of the emergency secrets.
+Then update the password on the [emergency secrets key](#emergency-secrets-key).
 
 ### Change the scan schedule, the paths or the disk threshold
 
@@ -474,7 +474,7 @@ Update `vault_traefik_dashboard_users` (new htpasswd line, see the README) or `v
 ### Change the backup password or the S3 key
 
 - **S3 key**: create the new key at the provider, update the vault, run `--tags backup`, revoke the old key.
-- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from the USB copy (`sudo backup usb key list`, `sudo backup usb key remove <ID>`). On S3 the old key file is locked for 90 days after it was written: remove it there once it is older than that, or leave it (it still opens the repository with the old password, so keep that password safe until then). Update the emergency sheet.
+- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from the USB copy (`sudo backup usb key list`, `sudo backup usb key remove <ID>`). On S3 the old key file is locked for 90 days after it was written: remove it there once it is older than that, or leave it (it still opens the repository with the old password, so keep that password safe until then). Update the [emergency secrets key](#emergency-secrets-key).
 
 ### Clean up the S3 copy (optional)
 
@@ -608,9 +608,40 @@ The play fails with "The server restored its previous network configuration", or
 
 ## 7. Recovery
 
+### Emergency secrets key
+
+The secrets needed to rebuild the server and read the backups, when the server and the laptop are both gone, are on a USB key with hardware encryption and a PIN keypad (AES-256, FIPS 140-2/140-3 level 3, IP68). It is unlocked on the key itself and then readable on any computer, with no software. It lives on the keyring, so during the day it is away from home; at night it is in the same house as the server and the laptop (accepted risk).
+
+What is on it, in one text file `RECOVERY.txt` (plus the files named):
+
+| Secret | Why |
+| --- | --- |
+| restic password, R2 endpoint, bucket and prefix, USB disk label | Read the backups. Without the password no copy can be read |
+| Ansible Vault password | Read `vault.yml`, run the playbook |
+| LUKS passphrase of the server's disk | Boot the server |
+| The admin user's console password | Log in at the console when SSH does not work ([Lost SSH access](#lost-ssh-access)) |
+| Vaultwarden master password, and `vaultwarden-export.json` (Vaultwarden's password-protected export) with its password | Every other account, including the 2FA recovery codes kept in Vaultwarden |
+| The laptop's SSH key (`id_ed25519`, with its passphrase) | Run the playbook from another computer |
+| The OPNsense configuration (*System → Configuration → Backups*) | Rebuild the firewall |
+| The steps: "clone the repositories, see [Rebuild the server](#rebuild-the-server)" | Where to start |
+
+Not on it: tokens that can be regenerated at the provider (Telegram bot, Cloudflare, R2 access keys).
+
+**Prepare it**: set a PIN you remember without writing it down (never next to the key), format it exFAT, copy the files, lock it, unlock it again and open `RECOVERY.txt`.
+
+**Check it every three months**:
+
+1. Unlock it: the PIN still works and the battery holds a charge.
+2. On the laptop, `ansible-vault view inventory/group_vars/prod_servers/vault.yml` with the vault password from the key: it opens, and `vault_restic_password` matches the one on the key.
+3. Replace `vaultwarden-export.json` with a fresh export (web vault: *Tools → Export vault*, format *.json (Encrypted)*, password-protected).
+
+**Update it** whenever one of these secrets changes (a vault rekey, a new restic password, a new LUKS passphrase).
+
+**If it is lost**: the data cannot be read without the PIN, and the key erases itself after too many wrong attempts. Prepare a new one from the laptop and the server; there is nothing to rotate, unless the PIN may have been seen.
+
 ### Lost SSH access
 
-Connect a monitor and a keyboard to the OptiPlex and log in on the console as the admin user, **with the password set during the Debian installation**. The playbook never changes it, and SSH rejects it, but the console accepts it. Keep that password with the emergency secrets.
+Connect a monitor and a keyboard to the OptiPlex and log in on the console as the admin user, **with the password set during the Debian installation**. The playbook never changes it, and SSH rejects it, but the console accepts it. Keep that password on the [emergency secrets key](#emergency-secrets-key).
 
 Then:
 

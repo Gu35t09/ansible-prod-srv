@@ -120,7 +120,7 @@ For Vaultwarden you need `vaultwarden` in `traefik_networks` (run `--tags traefi
 2. Register at `https://vault.greyroom.net` (through WireGuard or from the LAN).
 3. Set it back to `false` and run `--tags vaultwarden` again. Family members can then be invited from an organization in the web vault: invited addresses can register even with sign-ups off.
 
-Vaultwarden sends no e-mail (no SMTP, egress is blocked): there is no password reset by mail, so the master password must be on the emergency sheet.
+Vaultwarden sends no e-mail (no SMTP, egress is blocked): there is no password reset by mail, so the master password must be on the emergency secrets key (maintenance guide).
 
 For Immich you need `immich` in `traefik_networks` (run `--tags traefik` once after adding it), a host override `photo.greyroom.net` → services address in Unbound, and `vault_immich_db_password` in the vault (letters and digits only: `openssl rand -hex 24`). After the first run:
 
@@ -141,7 +141,7 @@ For Uptime Kuma you need `uptime-kuma` in `traefik_networks` and its aliases in 
 
 For the backup you need, before the first run:
 
-- **The restic password** in the vault (`vault_restic_password`, e.g. `openssl rand -base64 33`). Write it on the emergency sheet as well: without it no backup can be read.
+- **The restic password** in the vault (`vault_restic_password`, e.g. `openssl rand -base64 33`). Copy it to the emergency secrets key as well (maintenance guide): without it no backup can be read.
 - **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. The server holds a key that can delete, so **lock the bucket against deletion** at the provider: that is what keeps a compromised server from erasing the history. With `backup_s3_append_only: true` restic never deletes from the bucket (no `forget`, no `prune`; the weekly `check` still runs). On Cloudflare R2, *bucket → Settings → Bucket lock rules → Add rule*, four rules with the retention **Age, 90 days**, prefixes:
   - `prod-srv-01/data/` (the data), `prod-srv-01/snapshots/` (one file per backup), `prod-srv-01/keys/` (the encrypted master key: without it nothing can be read), `prod-srv-01/config`;
   - not `prod-srv-01/locks/` (restic writes and deletes a lock file at every run) nor `prod-srv-01/index/` (restic can rebuild it from the data with `repair index`).
