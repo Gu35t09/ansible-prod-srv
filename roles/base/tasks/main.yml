@@ -81,17 +81,18 @@
     mode: "0644"
   notify: Restart systemd-journald
 
-- name: Restrict unattended-upgrades to Debian security updates
+- name: Choose what unattended-upgrades installs
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
     content: |
       // Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
-      // Only security updates are installed automatically. Everything else,
-      // and any reboot, goes through the update-os tag. #clear drops the
-      // origins listed in 50unattended-upgrades before setting ours.
+      // Installed automatically every night, never with a reboot (base_unattended_origins).
+      // #clear drops the origins listed in 50unattended-upgrades before setting ours.
       #clear Unattended-Upgrade::Origins-Pattern;
       Unattended-Upgrade::Origins-Pattern {
-              "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+      {% for origin in base_unattended_origins %}
+              "{{ origin }}";
+      {% endfor %}
       };
       Unattended-Upgrade::Automatic-Reboot "false";
       Unattended-Upgrade::Remove-Unused-Dependencies "true";
@@ -130,6 +131,29 @@
   loop:
     - apt-daily.service
     - apt-daily-upgrade.service
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+
+# At night, at fixed times: the empty OnCalendar= drops Debian's schedule
+# (06:00 and 06:00/18:00, with random delays of up to 1 and 12 hours).
+- name: Schedule the apt jobs
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.unit }}.d/50-schedule.conf"
+    content: |
+      # Managed by Ansible (ansible-prod-srv): manual changes will be overwritten.
+      [Timer]
+      OnCalendar=
+      OnCalendar={{ item.when }}
+      RandomizedDelaySec=0
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { unit: apt-daily.timer, when: "{{ base_apt_update_on_calendar }}" }
+    - { unit: apt-daily-upgrade.timer, when: "{{ base_apt_upgrade_on_calendar }}" }
+  notify:
+    - Reload systemd
+    - Restart the apt timers
 
 # ExecStopPost runs whatever the job's result, with SERVICE_RESULT set.
 - name: Report after each apt job

@@ -47,7 +47,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 
 | Role | What it does |
 | --- | --- |
-| `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs **Debian security updates only** and never reboots; needrestart restarts the affected services. A Telegram message after every unattended-upgrades run (upgraded, nothing to install, errors, reboot needed), and when the package lists fail to download. |
+| `base` | Hostname, timezone, NTP from OPNsense (timesyncd always on), persistent journal capped at 500 MB, base packages. Unattended-upgrades installs every night at 04:00 Debian's stable, update and security packages and Docker's, and never reboots; needrestart restarts the affected services. After a Docker upgrade it restarts the rootless daemon and waits for every container to be running (and healthy) again. A Telegram message after every unattended-upgrades run (upgraded, nothing to install, errors, Docker not back, reboot needed), and when the package lists fail to download. |
 | `hardening` | Admin user in `sudo` with a passwordless rule, SSH keys managed exclusively (unlisted keys are removed), OpenSSH drop-in validated with `sshd -t` (`LogLevel VERBOSE`, so every login and its key are logged), kernel and network sysctl hardening. |
 | `network` | Writes `/etc/network/interfaces` (ifupdown): one NIC on an 802.1Q trunk, one address per VLAN, one routing table and `ip rule` per address so replies leave from the VLAN they came in on. Applies the change with a reboot and an automatic rollback. |
 | `firewall_host` | nftables: inbound denied by default; SSH only to the management address, ports 80/443 only to the services address; forwarding off; outbound left to OPNsense. |
@@ -66,19 +66,19 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 | `update_os` | `apt dist-upgrade`; when a newer kernel is waiting or a package asks for a reboot, reboot (if allowed) or report it on Telegram; restart of the rootless daemon after a Docker upgrade. |
 | `notify` | `/usr/local/sbin/notify-telegram`. The token lives only in `/etc/homelab/notify.env` (root, 0600), never in the scripts or in the process list. |
 
-## Tags and Semaphore jobs
+## Tags
 
 | Command | Use |
 | --- | --- |
 | `ansible-playbook site.yml` | Full configuration. Safe to run again: it changes nothing when the server already matches. |
 | `--tags base,hardening,firewall,docker,traefik,vaultwarden,immich,opencloud,paperless,uptime-kuma,clamav,monitoring,integrity,yara,backup` | One or more areas only. `security` = hardening + firewall. |
 | `--tags update-containers` | Every container service, at the versions pinned in the repository: after merging an image update. |
-| `--tags update-os` | Scheduled Semaphore job: upgrades; reports on Telegram when a reboot is needed (no automatic reboot on prod-srv-01). Never part of a full run. |
+| `--tags update-os` | By hand, rarely: a full `dist-upgrade` for what unattended-upgrades keeps back (shown as "Kept back" in its report); reports on Telegram when a reboot is needed (no automatic reboot on prod-srv-01). Never part of a full run. |
 | `--tags network` | Network changes only, run by hand. Never part of a full run. |
 
 Both `update-os` and `network` carry the `never` tag, so they run only when asked for by name.
 
-In Semaphore, store the vault password in the Key Store and attach it to the templates. A suggested setup: one template for `site.yml` (manual) and one for `--tags update-os` (scheduled, for example weekly at night).
+The playbook runs from the laptop (`--ask-vault-pass`): it holds the SSH key that becomes root on the server, so it is part of production (encrypted disk, a passphrase on the key). Nothing is scheduled from outside the server; Semaphore is not deployed (maintenance guide, "Running the playbook").
 
 ## First setup
 

@@ -19,6 +19,30 @@ base_packages:
   - systemd-timesyncd
   - unattended-upgrades
 
+# What unattended-upgrades installs every night, never with a reboot (the
+# disk is encrypted: a reboot waits for the passphrase at the console).
+# Debian's stable release and its updates (point releases), its security
+# updates, and Docker's packages. After a Docker upgrade the report script
+# restarts the rootless daemon and waits for the containers to come back.
+base_unattended_origins:
+  - "origin=Debian,codename=${distro_codename},label=Debian"
+  - "origin=Debian,codename=${distro_codename}-updates,label=Debian"
+  - "origin=Debian,codename=${distro_codename}-security,label=Debian-Security"
+  - "origin=Docker,label=Docker CE,archive=${distro_codename}"
+
+# systemd OnCalendar of the package jobs, with no random delay: the lists are
+# refreshed, then the upgrade runs, at night after the backup (02:30) and the
+# Saturday SMART long test (03:00).
+base_apt_update_on_calendar: "*-*-* 03:45:00"
+base_apt_upgrade_on_calendar: "*-*-* 04:00:00"
+
+# The rootless Docker user (docker_rootless role), for the restart after a
+# Docker upgrade. Nothing happens if it does not exist.
+docker_user: "svc-docker"
+# How long the report waits for the containers after that restart: keep it
+# well under 15 minutes (apt-daily-upgrade.service has TimeoutStopSec=900).
+base_docker_restart_wait: 300
+
 # needrestart mode after package upgrades: a = restart services automatically,
 # l = only list them.
 needrestart_mode: "a"

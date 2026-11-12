@@ -1,6 +1,7 @@
 ---
-# Run on a schedule from Semaphore with --tags update-os. It upgrades the
-# Debian packages (including Docker's) and reboots only when needed.
+# Run by hand with --tags update-os. A full dist-upgrade, for what
+# unattended-upgrades keeps back (it installs the rest every night); it
+# reboots only when needed and allowed.
 # Container images are not touched here: they follow the update-containers tag.
 
 - name: Record the installed package versions

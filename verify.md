@@ -25,12 +25,13 @@ Expected: `permitrootlogin no`, `passwordauthentication no`, `allowusers <admin_
 sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'
 ```
 
-Expected: only `codename=trixie-security,label=Debian-Security`.
+Expected: `origin=Debian,codename=trixie,label=Debian`, `…trixie-updates…`, `…trixie-security,label=Debian-Security` and `origin=Docker,label=Docker CE,archive=trixie`. The rootful Docker daemon stays off: `systemctl is-active docker.service docker.socket containerd.service` prints `inactive` three times.
 
 Telegram report:
 
 ```bash
 systemctl cat apt-daily-upgrade.service | grep ExecStopPost     # /usr/local/sbin/unattended-upgrades-report upgrade
+systemctl list-timers apt-daily.timer apt-daily-upgrade.timer    # next runs: 03:45 and 04:00
 systemctl cat apt-daily.service | grep ExecStopPost             # ... update
 sudo rm -f /var/lib/unattended-upgrades-report/last-run
 sudo SERVICE_RESULT=success /usr/local/sbin/unattended-upgrades-report upgrade   # re-sends the last run

@@ -10,7 +10,7 @@
 #
 # Roles tagged "never" run only when their tag is requested explicitly:
 #   --tags network    VLAN trunk, addresses and source routing (can cut access)
-#   --tags update-os  package upgrades; reboot or report when one is needed (Semaphore job)
+#   --tags update-os  full package upgrade, by hand; reboot or report when one is needed
 # ==============================================================================
 
 - name: Configure the production server

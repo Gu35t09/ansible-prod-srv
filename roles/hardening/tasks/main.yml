@@ -29,7 +29,7 @@
     exclusive: true
     state: present
 
-# Passwordless: Ansible and Semaphore use sudo non-interactively and the user
+# Passwordless: Ansible uses sudo non-interactively and the user
 # logs in with keys only. The rule covers admin_user alone.
 - name: Allow the administrative user to use sudo without a password
   ansible.builtin.copy:
