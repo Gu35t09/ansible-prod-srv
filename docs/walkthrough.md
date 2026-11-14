@@ -703,7 +703,7 @@ Daily at 02:30 (`backup_on_calendar`), after the ClamAV and YARA scans have star
 
 Exit code 1 when a copy failed, so the unit shows as failed in `systemctl --failed`.
 
-The same script runs any restic command on one copy, with the credentials loaded and the disk mounted for the duration: `sudo backup usb snapshots`, `sudo backup s3 restore latest --target /tmp/restore --include /srv/docker/app/<name>`. This is what the restore procedures in the maintenance guide use.
+The same script runs any restic command on one copy, with the credentials loaded and the disk mounted for the duration: `sudo backup usb snapshots`, `sudo backup s3 restore latest --target /srv/restore --include /srv/docker/app/<name>`. This is what the restore procedures in the maintenance guide use.
 
 What protects the copies:
 
