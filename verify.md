@@ -369,4 +369,14 @@ From a client: `https://health.greyroom.net` asks to create the admin account (f
 
 By hand: stop a service (`docker-svc stop vaultwarden`). Within two check intervals Telegram shows it down; start it again (`docker-svc start vaultwarden`) and the "up" message follows.
 
+Push monitors (after step 5 of the README's Uptime Kuma setup):
+
+```bash
+sudo systemctl cat disk-space-check.service | grep notify-push                     # ExecStopPost=/usr/local/sbin/notify-push disk_space
+sudo systemctl start disk-space-check.service && journalctl -u disk-space-check.service -n 3 --no-pager | grep notify-push   # nothing: the call worked
+sudo env SERVICE_RESULT=exit-code EXIT_CODE=exited EXIT_STATUS=1 /usr/local/sbin/notify-push disk_space   # a simulated failure
+```
+
+In Uptime Kuma the "Disk space check" monitor shows a green beat with `OK` after the start, then red with `exit-code (exited 1)` and a Telegram "Down" message; `sudo systemctl start disk-space-check.service` turns it green again with an "Up" message.
+
 A second `--tags uptime-kuma` run reports `changed=0`.

@@ -3,3 +3,24 @@ notify_telegram_enabled: true
 telegram_bot_token: ""
 telegram_chat_id: ""
 notify_env_file: /etc/homelab/notify.env
+
+# Uptime Kuma push monitors: at the end of each job systemd runs notify-push
+# (ExecStopPost), which tells the job's monitor "up" if the service succeeded
+# and "down" otherwise. A job that does not run at all sends nothing, and its
+# monitor turns down when the heartbeat interval passes.
+# Job name -> the token of its push URL (https://<host>/api/push/<token>).
+# A job without a token gets no call.
+notify_push_tokens: {}
+# Uptime Kuma's name, and the address to connect to instead of resolving it
+# (the services address: the call needs neither DNS nor OPNsense).
+notify_push_host: ""
+notify_push_address: ""
+notify_push_env_file: /etc/homelab/push.env
+# Job name -> systemd unit that runs it.
+notify_push_units:
+  backup: backup.service
+  clamav: clamav-scan.service
+  yara: yara-scan.service
+  integrity: integrity-check.service
+  disk_space: disk-space-check.service
+  unattended_upgrades: apt-daily-upgrade.service

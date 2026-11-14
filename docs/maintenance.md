@@ -42,7 +42,7 @@ Nothing in this list reboots the server or updates container images (a Docker up
 
 ### Every day (one minute)
 
-- Read the Telegram messages. Three arrive every day: "✅ UNATTENDED-UPGRADES" (packages upgraded or nothing to install), "✅ CLAMAV: SCAN CLEAN" and "✅ BACKUP OK". A message with "🔁 REBOOT REQUIRED" means a newer kernel (or a package) waits for a reboot: plan one (see [Reboot by hand](#reboot-by-hand)). They show that the server, the scans, the backup and the notifications all work: **if one does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message) and [Backup failed](#backup-failed).
+- Read the Telegram messages. Three arrive every day: "✅ UNATTENDED-UPGRADES" (packages upgraded or nothing to install), "✅ CLAMAV: SCAN CLEAN" and "✅ BACKUP OK". A message with "🔁 REBOOT REQUIRED" means a newer kernel (or a package) waits for a reboot: plan one (see [Reboot by hand](#reboot-by-hand)). They show that the server, the scans, the backup and the notifications all work: **if one does not arrive, something is wrong** even without an error message (server down, timer stopped, Telegram unreachable). See [No daily ClamAV message](#no-daily-clamav-message) and [Backup failed](#backup-failed). Uptime Kuma also reports a job that did not run, as a "Down" of its push monitor (see [A job's push monitor is down](#a-jobs-push-monitor-is-down)), as long as the server and Telegram work.
 
 ### Every week
 
@@ -105,6 +105,16 @@ The laptop holds the SSH key that becomes root on the server and types the vault
 Semaphore is not deployed: it would need a host of its own, outside the server it manages and outside OPNsense. If it is added later, give it the vault password and its own SSH key in its Key Store, and turn on its notifications for failed tasks.
 
 ## 4. Responding to notifications
+
+### A job's push monitor is down
+
+Message from Uptime Kuma: `[Backup] [🔴 Down] …` (or ClamAV scan, YARA scan, Unattended upgrades, Integrity check, Disk space check).
+
+- **`No heartbeat in the time window`**: the job did not run, or did not finish. `systemctl list-timers` (is the timer there, when did it last run?), `systemctl status <unit>` and `journalctl -u <unit> -n 50`. A timer left disabled (as in the [drill](#drill-on-a-vm)) is turned on again by running the role's tag.
+- **`exit-code (exited 1)`** or another result: the job ran and failed; its own Telegram message says why (see the sections below).
+- **`notify-push: … Uptime Kuma did not accept the call`** in the job's journal, with the monitor still down: the token in the vault does not match the monitor (a monitor recreated in Uptime Kuma gets a new token). Copy it again into `vault_uptime_kuma_push_tokens` and run `--tags base`.
+
+After a long stop of the server (more than 30 minutes, e.g. waiting for the disk passphrase) the two 15-minute monitors turn down when Uptime Kuma starts and up again at the next run: nothing to do.
 
 ### Docker needs attention
 
@@ -402,6 +412,8 @@ sudo cp -p /srv/restore$D/dump/kuma.db $D/data/kuma.db
 docker-svc start uptime-kuma
 sudo rm -rf /srv/restore
 ```
+
+The push monitors' tokens are in this database. If it is lost, create the monitors again (README, "Uptime Kuma"): they get new tokens, which go into the vault.
 
 ### Migrate the files from Nextcloud
 

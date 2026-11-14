@@ -527,6 +527,19 @@ If notifications are enabled and the token or chat ID is empty (vault missing or
 - `--max-time 20`: a slow network cannot block the calling script for long.
 - The message is cut at 4000 characters (Telegram's limit is 4096).
 
+**Check the push monitor settings** / **Write the push monitor tokens** / **Install the push helper**
+The Uptime Kuma push monitors, one per scheduled job, say when a job did not run at all, which no message of the job itself can say. `notify_push_tokens` (from `vault_uptime_kuma_push_tokens`) maps a job name to the token of its monitor; the assert refuses a name not in `notify_push_units`. The tokens go to `/etc/homelab/push.env` (0600, root, `no_log`), with `PUSH_HOST` (`health.<domain>`) and `PUSH_ADDRESS` (the services address).
+
+`/usr/local/sbin/notify-push <job>` (0750, root) reads `SERVICE_RESULT`, `EXIT_CODE` and `EXIT_STATUS`, which systemd sets for `ExecStopPost`, and calls `https://health.<domain>/api/push/<token>?status=up&msg=OK`, or `status=down` with the result (`exit-code (exited 1)`). Uptime Kuma 2.5.9's push endpoint (`server/routers/api-router.js`) reads exactly these two parameters and answers 404 for an unknown token.
+
+- `--resolve` connects to the services address directly: the call goes to Traefik on the server itself (`iif lo` is accepted by the host firewall), with no DNS and no OPNsense in the way, and still checks the certificate for the real name.
+- The URL with the token goes to curl on stdin (`-K -`), as for Telegram; `-G` adds the parameters to it.
+- It always exits 0 and writes problems to the job's journal: a missing token or an Uptime Kuma that does not answer never makes the job fail.
+- `SuccessExitStatus=1` of the ClamAV, YARA and integrity units makes a finding a successful run, so the monitor stays green and the finding comes from the job's own message. Red means the job broke, or did not run.
+
+**Create the drop-in directories of the jobs** / **Call the push monitor at the end of each job** / **Remove the call from the jobs without a token**
+`/etc/systemd/system/<unit>.d/90-push.conf` with `ExecStopPost=/usr/local/sbin/notify-push <job>`, only for the jobs with a token. `ExecStopPost` runs whatever the result, also after a crash or a timeout. `90-` sorts after the unattended-upgrades report (`50-telegram.conf`), so the call comes when the whole job, report included, has ended. A drop-in can exist before its unit (the notify role runs before the roles that install the units). The handler reloads systemd.
+
 ---
 
 ## 10. Role: clamav

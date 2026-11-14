@@ -54,6 +54,11 @@ network_dns_servers:
 # --- Notifications ------------------------------------------------------------
 telegram_bot_token: "{{ vault_telegram_bot_token }}"
 telegram_chat_id: "{{ vault_telegram_chat_id }}"
+# Uptime Kuma push monitors for the scheduled jobs (README, "Uptime Kuma"):
+# job name -> token of its push URL. Reached on the services address.
+notify_push_tokens: "{{ vault_uptime_kuma_push_tokens | default({}) }}"
+notify_push_host: "health.{{ traefik_domain }}"
+notify_push_address: "{{ services_address }}"
 
 # --- Traefik --------------------------------------------------------------------
 # Wildcard certificate for the domain; the dashboard is proxy.<domain>.
