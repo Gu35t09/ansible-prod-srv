@@ -1,5 +1,8 @@
-# --- Secrets: the Ansible Vault password never goes in the repository ---
-# (vault.yml is committed, but only encrypted; .githooks/pre-commit checks it)
+# --- Secrets: neither the vault nor its password goes in the repository ---
+# vault.yml stays on the laptop and on the emergency secrets key (maintenance
+# guide). If it is ever added with "git add -f", .githooks/pre-commit still
+# refuses it unencrypted.
+inventory/group_vars/prod_servers/vault.yml
 .vault_pass
 .vault_pass*
 *.vault_pass

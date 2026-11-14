@@ -4,7 +4,7 @@
 docker_user: "svc-docker"
 docker_user_home: "/home/{{ docker_user }}"
 # Compose files and data of the containers, one directory per service:
-#   <docker_root_dir>/system/<name>  infrastructure (Traefik, Renovate)
+#   <docker_root_dir>/system/<name>  infrastructure (Traefik)
 #   <docker_root_dir>/app/<name>     applications (Vaultwarden, Immich, ...)
 docker_root_dir: /srv/docker
 
