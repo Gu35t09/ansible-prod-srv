@@ -272,21 +272,37 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 
 ### SSH with the YubiKey
 
-The admin key can live on a FIDO2 security key (YubiKey 5, firmware 5.2.3 or later): the private key never leaves it, and every connection needs its PIN and a touch. The file left on the laptop is only a reference, useless without the YubiKey. The server needs no change (OpenSSH accepts `sk-ssh-ed25519` keys by default).
+The admin key lives on a FIDO2 security key (YubiKey 5, firmware 5.2.3 or later): the private key never leaves it, and every connection needs its PIN and a touch. The file on the laptop is only a reference, useless without the YubiKey. The server needs no change (OpenSSH accepts `sk-ssh-ed25519` keys by default). The file key `id_ed25519` stays in `admin_ssh_keys` but only on the [emergency secrets key](#emergency-secrets-key), as the way in without the YubiKey; a second YubiKey kept at home, with its own key in the list, avoids depending on it.
 
-Create the key (it asks for the FIDO2 PIN, `ykman fido access change-pin` sets one, and a touch; the file passphrase can stay empty):
+**Create the key** (FIDO2 PIN set with `ykman fido access change-pin`; it asks for the PIN and a touch):
 
 ```bash
-ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:prod-srv-01 -C "<name> Yubikey <n>" -f ~/.ssh/id_ed25519_sk
+ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:prod-srv-01 -C "<name> Yubikey <n>" -f ~/.ssh/id_ed25519_sk -N ""
 ```
 
-- `resident`: the key is stored on the YubiKey too, so a new computer gets the file back with `ssh-keygen -K` (PIN and touch), with nothing to copy.
+- `resident`: the key is stored on the YubiKey too, so a new computer gets the file back with `ssh-keygen -K`, with nothing to copy.
 - `verify-required`: PIN and touch, not touch alone; a found YubiKey is useless without the PIN. Eight wrong PINs lock FIDO2, and resetting it erases every FIDO2 registration on it (passkeys and security keys on the websites as well).
-- `~/.ssh/id_ed25519_sk` is one of the names `ssh` tries by itself, so Ansible uses it with no setting. A playbook run asks for the PIN and a touch once: Ansible keeps one SSH connection open for the run (`ControlPersist`).
+- `-N ""`: no passphrase on the file, which holds only a reference to the key on the YubiKey; one would be a third prompt at every connection. Remove an existing one with `ssh-keygen -p -f ~/.ssh/id_ed25519_sk -N ""`.
 
-Add the `.pub` line to `admin_ssh_keys` as in [Add or remove an SSH key](#add-or-remove-an-ssh-key), and check it alone: `ssh -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk <admin user>@<management IP>`. Once it works, the laptop's file key (`~/.ssh/id_ed25519`) can go: it stays in `admin_ssh_keys` and on the [emergency secrets key](#emergency-secrets-key) as the way in without the YubiKey. A second YubiKey kept at home, with its own key in the list, avoids depending on that file.
+Add the `.pub` line to `admin_ssh_keys` as in [Add or remove an SSH key](#add-or-remove-an-ssh-key).
 
-On a new computer: plug the YubiKey, `cd ~/.ssh && ssh-keygen -K`, which writes `id_ed25519_sk_rk_prod-srv-01`; rename it to `id_ed25519_sk` (and its `.pub`).
+**Set up the laptop** (Fedora with GNOME; once per computer):
+
+1. `sudo dnf install openssh-askpass`. Ansible runs `ssh` without a terminal, so the PIN is asked in a window (`/usr/libexec/openssh/ssh-askpass`) and the touch in a notification. Without it the run fails with `exec(/usr/libexec/openssh/ssh-askpass): No such file or directory`.
+2. In `~/.ssh/config`, so that `ssh` asks for the PIN itself instead of GNOME's agent (`gcr-ssh-agent` loads every key in `~/.ssh` by itself and cannot ask a FIDO2 PIN: `agent refused operation`):
+   ```
+   Host <management IP> prod-srv-01
+       IdentityAgent none
+       IdentitiesOnly yes
+       IdentityFile ~/.ssh/id_ed25519_sk
+   ```
+3. Check: `ssh <admin user>@<management IP> hostname` (PIN in the terminal, touch, the host name), then `ansible prod_servers -m ping --ask-vault-pass` (PIN in a window, touch, `pong`). A playbook run asks once: Ansible keeps one SSH connection open for the run (`ControlPersist`).
+
+Each failed attempt makes sshd hold back the next connection from the same address for a few seconds (`srclimit_penalise` in its log): wait half a minute between tries.
+
+**On a new computer**: plug the YubiKey, `cd ~/.ssh && ssh-keygen -K`, which writes `id_ed25519_sk_rk_prod-srv-01` (and its `.pub`); rename it to `id_ed25519_sk`, then set up the computer as above.
+
+**Without the YubiKey**: copy the file key from the emergency key with `install -m 600 <key>/id_ed25519 ~/.ssh/emergency_key` and add `--private-key ~/.ssh/emergency_key` to the playbook (or `-i ~/.ssh/emergency_key` to `ssh`); it asks for its passphrase. Delete the copy afterwards.
 
 ### Rotate the Telegram token
 
@@ -708,7 +724,7 @@ If the laptop was on or unlocked, or the vault password may have been seen:
 
 Without the PIN the YubiKey cannot be used, and eight wrong attempts lock it, so there is time, but remove it anyway:
 
-1. From the laptop with the emergency file key (`ssh-add` or `--private-key`, see [Lost or stolen laptop](#lost-or-stolen-laptop), step 3), or with the second YubiKey: remove its line from `admin_ssh_keys` and run `--tags hardening`.
+1. From the laptop with the second YubiKey, or with the emergency file key (`--private-key`, see "Without the YubiKey" in [SSH with the YubiKey](#ssh-with-the-yubikey)): remove its line from `admin_ssh_keys` and run `--tags hardening`.
 2. On every website where it was a second factor or a passkey: log in with the second YubiKey or the recovery codes (in Vaultwarden) and remove it.
 3. Register a new YubiKey (see [SSH with the YubiKey](#ssh-with-the-yubikey)) and on the websites.
 
@@ -724,7 +740,7 @@ With a single disk, replacing it means rebuilding the server:
 Everything needed is in the repository on GitHub and on the [emergency secrets key](#emergency-secrets-key).
 
 1. Install Debian 13 from netinst: admin user with the same name, empty root password, static IP on the management network, SSH server, encrypted LVM (a new passphrase is fine) with `/srv` as its own volume taking most of the disk (prod-srv-01: `/` 93 GB, `/var` 37 GB, the rest `/srv`).
-2. On the computer you run Ansible from: clone the repository, `ansible-galaxy collection install -r requirements.yml`, `git config core.hooksPath .githooks`, and copy `vault.yml` from the emergency key into `inventory/group_vars/prod_servers/`. If the laptop is gone, copy the SSH key from the emergency key with `install -m 600` (see [Lost or stolen laptop](#lost-or-stolen-laptop)).
+2. On the computer you run Ansible from: clone the repository, `ansible-galaxy collection install -r requirements.yml`, `git config core.hooksPath .githooks`, and copy `vault.yml` from the emergency key into `inventory/group_vars/prod_servers/`. If the laptop is gone, get the YubiKey's key with `ssh-keygen -K` and set up the computer (see [SSH with the YubiKey](#ssh-with-the-yubikey)), or use the file key from the emergency key.
 3. `ssh-copy-id <admin user>@<management IP>`, and remove the old host key, since the server has a new one: `ssh-keygen -R <management IP>`.
 4. `ansible-playbook site.yml --ask-vault-pass -K`. `-K` asks for the admin user's password: on a new install sudo still asks for it; the playbook then makes it passwordless, and later runs need no `-K`.
 5. `ansible-playbook site.yml --tags network --ask-vault-pass` to move to the VLANs (at the console: it reboots), then `--tags security`.
