@@ -1,0 +1,43 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Tells a job's Uptime Kuma push monitor that the job ended:
+#   notify-push <job>
+# Run by systemd as ExecStopPost of the job's unit, which sets SERVICE_RESULT,
+# EXIT_CODE and EXIT_STATUS: "up" if the service succeeded, "down" with the
+# reason otherwise. Never fails the job: problems go to the journal.
+set -u
+
+JOB=${1:?usage: notify-push <job>}
+ENV_FILE={{ notify_push_env_file | quote }}
+
+if [ ! -r "$ENV_FILE" ]; then
+    echo "notify-push: $ENV_FILE not readable" >&2
+    exit 0
+fi
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+
+var="PUSH_TOKEN_${JOB^^}"
+token=${!var:-}
+if [ -z "$token" ]; then
+    echo "notify-push: no token for $JOB" >&2
+    exit 0
+fi
+
+if [ "${SERVICE_RESULT:-success}" = "success" ]; then
+    status=up
+    msg=OK
+else
+    status=down
+    msg="${SERVICE_RESULT} (${EXIT_CODE:-?} ${EXIT_STATUS:-?})"
+fi
+
+# The token goes through curl's config on stdin, not the command line.
+resolve=()
+[ -n "${PUSH_ADDRESS:-}" ] && resolve=(--resolve "${PUSH_HOST}:443:${PUSH_ADDRESS}")
+if ! printf 'url = "https://%s/api/push/%s"\n' "$PUSH_HOST" "$token" \
+    | curl -fsS --max-time 20 --retry 2 --retry-all-errors -o /dev/null -K - "${resolve[@]}" \
+        -G --data-urlencode "status=${status}" --data-urlencode "msg=${msg}"; then
+    echo "notify-push: ${JOB}: Uptime Kuma did not accept the call (${status})" >&2
+fi
+exit 0

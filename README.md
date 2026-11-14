@@ -138,6 +138,18 @@ For Uptime Kuma you need `uptime-kuma` in `traefik_networks` and its aliases in 
 2. *Settings → Notifications → Setup Notification*: type Telegram, the bot token and chat ID from the vault (`vault_telegram_bot_token`, `vault_telegram_chat_id`), *Default enabled* and *Apply on all existing monitors*; *Test*.
 3. *Settings → Reverse Proxy → Trusted Proxies*: Yes (the logins are logged with your address, not Traefik's).
 4. *Add New Monitor*, type HTTP(s), interval 60 s, *Certificate Expiry Notification* on, one for each service: `https://vault.greyroom.net/alive`, `https://photo.greyroom.net/api/server/ping`, `https://cloud.greyroom.net/status.php`, `https://document.greyroom.net/accounts/login/`. A name not in `traefik_network_aliases` cannot be checked: add it there first.
+5. *Add New Monitor*, type **Push**, one for each scheduled job, with *Retries* 0. *Heartbeat Interval*: 90000 s (25 h) for the daily jobs, 1800 s for the ones every 15 minutes. Copy the token (the part of the *Push URL* after `/api/push/`, before `?`) into `vault_uptime_kuma_push_tokens` under the job's name, then run `--tags base` (it carries the `notify` role, which writes the calls for every job):
+
+   | Monitor | Job name | Interval |
+   | --- | --- | --- |
+   | Backup | `backup` | 90000 |
+   | ClamAV scan | `clamav` | 90000 |
+   | YARA scan | `yara` | 90000 |
+   | Unattended upgrades | `unattended_upgrades` | 90000 |
+   | Integrity check | `integrity` | 1800 |
+   | Disk space check | `disk_space` | 1800 |
+
+   Each job then calls its monitor when it ends: green if it succeeded, red with the reason if it failed, and red after the interval if it did not run at all. A scan that finds something still counts as a run that worked (its own Telegram message reports the finding).
 
 For the backup you need, before the first run:
 
