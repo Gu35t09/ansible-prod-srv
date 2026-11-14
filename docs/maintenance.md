@@ -270,6 +270,24 @@ Every procedure that changes the configuration follows the same pattern: change 
 
 The list is exclusive: a key you remove is deleted from the server. **Never remove the key you are using in the same run.** Add the new key, run, test that it works, then remove the old one and run again.
 
+### SSH with the YubiKey
+
+The admin key can live on a FIDO2 security key (YubiKey 5, firmware 5.2.3 or later): the private key never leaves it, and every connection needs its PIN and a touch. The file left on the laptop is only a reference, useless without the YubiKey. The server needs no change (OpenSSH accepts `sk-ssh-ed25519` keys by default).
+
+Create the key (it asks for the FIDO2 PIN, `ykman fido access change-pin` sets one, and a touch; the file passphrase can stay empty):
+
+```bash
+ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:prod-srv-01 -C "<name> Yubikey <n>" -f ~/.ssh/id_ed25519_sk
+```
+
+- `resident`: the key is stored on the YubiKey too, so a new computer gets the file back with `ssh-keygen -K` (PIN and touch), with nothing to copy.
+- `verify-required`: PIN and touch, not touch alone; a found YubiKey is useless without the PIN. Eight wrong PINs lock FIDO2, and resetting it erases every FIDO2 registration on it (passkeys and security keys on the websites as well).
+- `~/.ssh/id_ed25519_sk` is one of the names `ssh` tries by itself, so Ansible uses it with no setting. A playbook run asks for the PIN and a touch once: Ansible keeps one SSH connection open for the run (`ControlPersist`).
+
+Add the `.pub` line to `admin_ssh_keys` as in [Add or remove an SSH key](#add-or-remove-an-ssh-key), and check it alone: `ssh -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk <admin user>@<management IP>`. Once it works, the laptop's file key (`~/.ssh/id_ed25519`) can go: it stays in `admin_ssh_keys` and on the [emergency secrets key](#emergency-secrets-key) as the way in without the YubiKey. A second YubiKey kept at home, with its own key in the list, avoids depending on that file.
+
+On a new computer: plug the YubiKey, `cd ~/.ssh && ssh-keygen -K`, which writes `id_ed25519_sk_rk_prod-srv-01`; rename it to `id_ed25519_sk` (and its `.pub`).
+
 ### Rotate the Telegram token
 
 1. In @BotFather: `/revoke`, choose the bot, copy the new token.
@@ -635,7 +653,7 @@ What is on it, in one text file `RECOVERY.txt` (plus the files named):
 | LUKS passphrase of the server's disk | Boot the server |
 | The admin user's console password | Log in at the console when SSH does not work ([Lost SSH access](#lost-ssh-access)) |
 | Vaultwarden master password, and `vaultwarden-export.json` (Vaultwarden's password-protected export) with its password | Every other account, including the 2FA recovery codes kept in Vaultwarden |
-| The laptop's SSH key (`id_ed25519`, with its passphrase) | Run the playbook from another computer |
+| The file SSH key (`id_ed25519`, with its passphrase) | Log in and run the playbook from another computer, also without the YubiKey |
 | The OPNsense configuration (*System → Configuration → Backups*) | Rebuild the firewall |
 | The steps: "clone the repositories, see [Rebuild the server](#rebuild-the-server)" | Where to start |
 
@@ -668,7 +686,7 @@ Then:
 The laptop holds root access to the server: its SSH key is in `admin_ssh_keys` and the admin user has passwordless sudo. It also holds `vault.yml`, logged-in sessions (GitHub, Vaultwarden, OpenCloud) and its WireGuard key, which reaches the management network. What protects them:
 
 - the disk is encrypted with LUKS: safe if the laptop was **off**, not if it was on, suspended or unlocked;
-- the SSH key has a passphrase;
+- the SSH key has a passphrase; with the [YubiKey](#ssh-with-the-yubikey) and no file key left on the laptop, the laptop alone cannot log in at all, and steps 3–6 below are not needed (steps 2 and 7 still are);
 - the vault password is never stored: it is typed at every run (`--ask-vault-pass`).
 
 Always, from another computer with the [emergency secrets key](#emergency-secrets-key):
@@ -685,6 +703,14 @@ If the laptop was on or unlocked, or the vault password may have been seen:
 
 8. Treat the server as possibly compromised for the time the laptop was out of your hands: read the SSH log (`journalctl -u ssh`) for logins you did not make, and if there are any follow [Suspected compromise](#suspected-compromise).
 9. Rotate the secrets in `vault.yml` (the list in [Suspected compromise](#suspected-compromise), step 4), then [change the vault password](#change-the-vault-password). A rekey alone is not enough: the old copy of `vault.yml` still opens with the old password.
+
+### Lost YubiKey
+
+Without the PIN the YubiKey cannot be used, and eight wrong attempts lock it, so there is time, but remove it anyway:
+
+1. From the laptop with the emergency file key (`ssh-add` or `--private-key`, see [Lost or stolen laptop](#lost-or-stolen-laptop), step 3), or with the second YubiKey: remove its line from `admin_ssh_keys` and run `--tags hardening`.
+2. On every website where it was a second factor or a passkey: log in with the second YubiKey or the recovery codes (in Vaultwarden) and remove it.
+3. Register a new YubiKey (see [SSH with the YubiKey](#ssh-with-the-yubikey)) and on the websites.
 
 ### Replace the disk
 
