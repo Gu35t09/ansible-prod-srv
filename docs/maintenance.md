@@ -617,7 +617,7 @@ What is on it, in one text file `RECOVERY.txt` (plus the files named):
 | Secret | Why |
 | --- | --- |
 | restic password, R2 endpoint, bucket and prefix, USB disk label | Read the backups. Without the password no copy can be read |
-| Ansible Vault password | Read `vault.yml`, run the playbook |
+| A copy of `inventory/group_vars/prod_servers/vault.yml` (encrypted) and the Ansible Vault password | The playbook's secrets (database passwords, Paperless secret key, tokens). The file is never committed, so this copy and the laptop are the only ones |
 | LUKS passphrase of the server's disk | Boot the server |
 | The admin user's console password | Log in at the console when SSH does not work ([Lost SSH access](#lost-ssh-access)) |
 | Vaultwarden master password, and `vaultwarden-export.json` (Vaultwarden's password-protected export) with its password | Every other account, including the 2FA recovery codes kept in Vaultwarden |
@@ -632,10 +632,10 @@ Not on it: tokens that can be regenerated at the provider (Telegram bot, Cloudfl
 **Check it every three months**:
 
 1. Unlock it: the PIN still works and the battery holds a charge.
-2. On the laptop, `ansible-vault view inventory/group_vars/prod_servers/vault.yml` with the vault password from the key: it opens, and `vault_restic_password` matches the one on the key.
+2. On the laptop, `cmp <key>/vault.yml inventory/group_vars/prod_servers/vault.yml` prints nothing (the copy is current; if not, copy it again), then `ansible-vault view <key>/vault.yml` with the vault password from the key: it opens, and `vault_restic_password` matches the one on the key.
 3. Replace `vaultwarden-export.json` with a fresh export (web vault: *Tools → Export vault*, format *.json (Encrypted)*, password-protected).
 
-**Update it** whenever one of these secrets changes (a vault rekey, a new restic password, a new LUKS passphrase).
+**Update it** whenever one of these secrets changes (any edit of `vault.yml`, a vault rekey, a new restic password, a new LUKS passphrase).
 
 **If it is lost**: the data cannot be read without the PIN, and the key erases itself after too many wrong attempts. Prepare a new one from the laptop and the server; there is nothing to rotate, unless the PIN may have been seen.
 
