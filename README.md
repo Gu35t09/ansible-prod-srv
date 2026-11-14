@@ -154,9 +154,11 @@ For Uptime Kuma you need `uptime-kuma` in `traefik_networks` and its aliases in 
 For the backup you need, before the first run:
 
 - **The restic password** in the vault (`vault_restic_password`, e.g. `openssl rand -base64 33`). Copy it to the emergency secrets key as well (maintenance guide): without it no backup can be read.
-- **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. The server holds a key that can delete, so **lock the bucket against deletion** at the provider: that is what keeps a compromised server from erasing the history. With `backup_s3_append_only: true` restic never deletes from the bucket (no `forget`, no `prune`; the weekly `check` still runs). On Cloudflare R2, *bucket → Settings → Bucket lock rules → Add rule*, four rules with the retention **Age, 90 days**, prefixes:
+- **An S3 bucket** and a key limited to it (`vault_backup_s3_access_key`, `vault_backup_s3_secret_key`), with `backup_s3_endpoint` and `backup_s3_bucket` in `main.yml`. The server holds a key that can delete, so **lock the bucket against deletion** at the provider: that is what keeps a compromised server from erasing the history. With `backup_s3_append_only: true` restic never deletes from the bucket (no `forget`, no `prune`; the weekly `check` still runs). On Cloudflare R2, *bucket → Settings → Bucket lock rules → Add rule*, four rules with the retention **Indefinite**, prefixes:
   - `prod-srv-01/data/` (the data), `prod-srv-01/snapshots/` (one file per backup), `prod-srv-01/keys/` (the encrypted master key: without it nothing can be read), `prod-srv-01/config`;
   - not `prod-srv-01/locks/` (restic writes and deletes a lock file at every run) nor `prod-srv-01/index/` (restic can rebuild it from the data with `repair index`).
+
+  Not an **Age** retention: it protects an object only until it reaches that age, so after 90 days `config`, `keys/` (written once, when the repository is created) and every older data file could be deleted with the server's key, and the repository with them.
 
   Turn `backup_s3_append_only` on and run `--tags backup` **before** adding the rules, or the nightly `forget` fails on locked snapshots. Allow the endpoint on OPNsense.
 - **The USB disk**, formatted once with the label the server looks for. This erases the disk:

@@ -77,7 +77,7 @@ Nothing in this list reboots the server or updates container images (a Docker up
 - Test that notifications work end to end: `sudo notify-telegram "Quarterly test from $(hostname)"`.
 - Run the EICAR test from `verify.md` section 8, and the YARA one from section 12.
 - **Restore test**: restore one service directory (`/srv/docker/app/<name>`) from each copy and compare it with the original (see [Restore files](#restore-files)). A backup that was never restored is not a backup.
-- Check that the four bucket lock rules (90 days) are still on in the R2 dashboard, and look at the bucket's size and cost.
+- Check that the four bucket lock rules (retention **Indefinite**) are still on in the R2 dashboard, and look at the bucket's size and cost.
 - Refresh the YARA rules on the laptop, see [Refresh the YARA rules](#refresh-the-yara-rules).
 - Check the emergency secrets key and refresh the Vaultwarden export on it (see [Emergency secrets key](#emergency-secrets-key)).
 
@@ -522,18 +522,22 @@ Update `vault_traefik_dashboard_users` (new htpasswd line, see the README) or `v
 ### Change the backup password or the S3 key
 
 - **S3 key**: create the new key at the provider, update the vault, run `--tags backup`, revoke the old key.
-- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from the USB copy (`sudo backup usb key list`, `sudo backup usb key remove <ID>`). On S3 the old key file is locked for 90 days after it was written: remove it there once it is older than that, or leave it (it still opens the repository with the old password, so keep that password safe until then). Update the [emergency secrets key](#emergency-secrets-key).
+- **restic password**: `sudo backup usb key add` and `sudo backup s3 key add` (enter the new password), update the vault, run `--tags backup`, run a backup, then remove the old key from the USB copy (`sudo backup usb key list`, `sudo backup usb key remove <ID>`). On S3 the old key file is locked with no time limit, and it still opens the repository with the old password. If the old password was only replaced as routine, leave the key and keep that password safe. If it may have leaked, remove it: in the R2 dashboard delete the lock rule for `prod-srv-01/keys/`, run `sudo backup s3 key remove <ID>`, and add the rule again (retention Indefinite) right away. Update the [emergency secrets key](#emergency-secrets-key).
 
 ### Clean up the S3 copy (optional)
 
-The S3 copy is append-only and keeps every daily snapshot. If its size starts to cost, clean it up by hand, deleting only what is older than the 90-day lock:
+The S3 copy is append-only and keeps every daily snapshot: the bucket lock has no time limit, so nothing there can be deleted while the rules are on. If its size starts to cost, clean it up by hand. The repository is unprotected while the rules are off: do it when nothing suggests the server is compromised (no open alert), and in one sitting.
 
-```bash
-sudo backup s3 forget --keep-within 100d --keep-monthly 24
-sudo backup s3 prune
-```
-
-`--keep-within 100d` keeps every snapshot of the last 100 days, so `forget` never touches a locked file. `prune` rewrites the index (not locked) and deletes data no snapshot uses; an error on a recent data file means the lock refused it, and the next clean-up removes it.
+1. R2 dashboard, *bucket → Settings → Bucket lock rules*: delete the rules for `prod-srv-01/data/` and `prod-srv-01/snapshots/`. **Leave `prod-srv-01/keys/` and `prod-srv-01/config` locked.**
+2. On the server:
+   ```bash
+   sudo backup s3 forget --keep-within 100d --keep-monthly 24
+   sudo backup s3 prune
+   sudo backup s3 check
+   ```
+   `forget` keeps every snapshot of the last 100 days and one per month for two years; `prune` deletes the data no snapshot uses.
+3. Add the two rules again, retention **Indefinite**, and check that all four are listed.
+4. Repeat the lock test in `verify.md` (section 13, "S3 bucket lock").
 
 
 ### Change the network (VLANs, addresses)

@@ -182,7 +182,7 @@ sudo backup s3 forget <ID>                                       # must fail: ac
 sudo backup s3 snapshots --tag locktest                          # the snapshot is still there
 ```
 
-The test snapshot stays (a few bytes; it can be removed after 90 days). The nightly report for S3 ends with "append-only".
+The test snapshot stays (a few bytes; the lock has no time limit, so it goes only with a manual clean-up, maintenance guide). The nightly report for S3 ends with "append-only".
 
 To test the failure message, unplug the USB disk and start the backup: `❌ BACKUP FAILED` with "USB disk not connected", and the S3 copy still saved.
 
