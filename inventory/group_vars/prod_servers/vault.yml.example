@@ -1,8 +1,10 @@
 ---
-# Copy to vault.yml, fill in the values and encrypt it before committing:
+# Copy to vault.yml, fill in the values and encrypt it:
 #   cp vault.yml.example vault.yml
 #   ansible-vault encrypt vault.yml
-# The pre-commit hook in .githooks/ refuses an unencrypted vault.yml.
+# vault.yml is not committed (.gitignore): keep a copy on the emergency
+# secrets key. The pre-commit hook in .githooks/ refuses an unencrypted one
+# if it is ever added by force.
 
 vault_telegram_bot_token: "123456789:REPLACE_ME"
 vault_telegram_chat_id: "123456789"

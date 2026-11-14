@@ -40,7 +40,7 @@ It covers the server foundations, detection (ClamAV, integrity check, YARA) and 
 ├── .github/workflows/renovate.yml    # runs Renovate every Saturday, Telegram summary
 ├── .github/renovate-image            # the Renovate image the workflow runs
 ├── scripts/update-yara-rules.sh      # refreshes the vendored YARA rules
-└── .githooks/pre-commit              # refuses an unencrypted vault.yml
+└── .githooks/pre-commit              # refuses an unencrypted vault.yml (the file itself is in .gitignore)
 ```
 
 ## Roles

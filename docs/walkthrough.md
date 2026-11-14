@@ -1114,6 +1114,8 @@ Container images are **not** updated here: they follow the `update-containers` t
 
 `.githooks/pre-commit` runs before every commit, once enabled with `git config core.hooksPath .githooks` (one time per clone). For every staged file named `vault.yml` or `vault.yaml`, it reads the **staged** version (`git show :<file>`) and refuses the commit if its first line does not start with `$ANSIBLE_VAULT;`. It reads the staged version, not the working copy, because that is what would end up in the history.
 
+`vault.yml` itself is in `.gitignore` and is never committed: it lives on the laptop and on the emergency secrets key (maintenance guide). The hook is the second barrier, for a file added with `git add -f` or a vault file under another path.
+
 ---
 
 ## 24. Files the playbook creates on the server
