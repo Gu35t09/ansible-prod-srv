@@ -158,8 +158,10 @@ For the backup you need, before the first run:
 ### 3. Run it
 
 ```bash
-ansible-playbook site.yml --ask-vault-pass
+ansible-playbook site.yml --ask-vault-pass -K
 ```
+
+`-K` asks for the admin user's password, which sudo still needs on a new install; the run makes sudo passwordless for that user, so later runs need no `-K`.
 
 The first run takes a few minutes: ClamAV downloads its signature database (a few hundred MB) before the daemon can start.
 

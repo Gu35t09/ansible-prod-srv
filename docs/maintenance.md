@@ -83,7 +83,7 @@ Nothing in this list reboots the server or updates container images (a Docker up
 
 ### Every year
 
-- Disaster recovery drill: rebuild the server on a lab VM from the repository and the backup (see [Rebuild the server](#rebuild-the-server)). Write down how long it took.
+- Disaster recovery drill: rebuild the server on a lab VM from the repository and the emergency key (see [Drill on a VM](#drill-on-a-vm)). Write down how long it took.
 - Check the Debian release calendar: Debian 13 gets security support until about mid-2028, then LTS. Plan the move to Debian 14 within a year of its release (see [Major Debian upgrade](#major-debian-upgrade)).
 - Review the SSH keys in `admin_ssh_keys` and remove the ones from devices you no longer use.
 - Rotate the Telegram token (see [Rotate the Telegram token](#rotate-the-telegram-token): it is also a GitHub secret) and the Cloudflare token.
@@ -293,13 +293,13 @@ On the laptop, which can reach GitHub:
 
 ### Restore files
 
-The `backup` script loads the credentials and mounts the disk:
+The `backup` script loads the credentials and mounts the disk. Restore into `/srv/restore`, never `/tmp/restore`: on Debian 13 `/tmp` is in RAM (tmpfs, about 4 GB here), too small for Immich or OpenCloud. `/srv` has the room, on the same disk as the data.
 
 ```bash
 sudo backup usb snapshots                       # or: sudo backup s3 snapshots
-sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/<name>
-sudo diff -r /tmp/restore/srv/docker/app/<name> /srv/docker/app/<name>    # restore test: compare
-sudo rm -rf /tmp/restore
+sudo backup usb restore latest --target /srv/restore --include /srv/docker/app/<name>
+sudo diff -r /srv/restore/srv/docker/app/<name> /srv/docker/app/<name>    # restore test: compare
+sudo rm -rf /srv/restore
 ```
 
 To put data back in place, stop the application first, restore into a temporary directory, then move the files (or restore with `--target /`, which overwrites the current files). A snapshot from a specific day: take its ID from `snapshots` instead of `latest`.
@@ -310,13 +310,13 @@ The database to restore is the dump, `dump/db.sqlite3`, not `data/db.sqlite3` (a
 
 ```bash
 docker-svc compose -f /srv/docker/app/vaultwarden/compose.yml stop
-sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/vaultwarden
-R=/tmp/restore/srv/docker/app/vaultwarden; D=/srv/docker/app/vaultwarden
+sudo backup usb restore latest --target /srv/restore --include /srv/docker/app/vaultwarden
+R=/srv/restore/srv/docker/app/vaultwarden; D=/srv/docker/app/vaultwarden
 sudo cp -a $R/data/. $D/data/                                     # key, attachments, sends
 sudo rm -f $D/data/db.sqlite3-wal $D/data/db.sqlite3-shm
 sudo install -o svc-docker -g svc-docker -m 0600 $R/dump/db.sqlite3 $D/data/db.sqlite3   # then the dump over the live copy
 docker-svc compose -f /srv/docker/app/vaultwarden/compose.yml start
-sudo rm -rf /tmp/restore
+sudo rm -rf /srv/restore
 ```
 
 Then log in from a client and check a few entries. For a single lost entry, restoring the server is overkill: use the client's history or an export.
@@ -330,15 +330,15 @@ The library (`library/`) is restored as files. The database comes from the dump,
 ```bash
 C="docker-svc compose -f /srv/docker/app/immich/compose.yml"; D=/srv/docker/app/immich
 $C down
-sudo backup usb restore latest --target /tmp/restore --include $D/library --include $D/dump
-sudo cp -a /tmp/restore$D/library/. $D/library/
+sudo backup usb restore latest --target /srv/restore --include $D/library --include $D/dump
+sudo cp -a /srv/restore$D/library/. $D/library/
 sudo rm -rf $D/postgres && sudo install -d -o svc-docker -g svc-docker -m 0700 $D/postgres
 $C create && docker-svc start immich_postgres && sleep 15
-sudo zcat /tmp/restore$D/dump/immich.sql.gz \
+sudo zcat /srv/restore$D/dump/immich.sql.gz \
   | sed "s/SELECT pg_catalog.set_config('search_path', '', false);/SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g" \
   | docker-svc exec -i immich_postgres psql --dbname=postgres --username=postgres
 $C up -d
-sudo rm -rf /tmp/restore
+sudo rm -rf /srv/restore
 ```
 
 The two errors "current user cannot be dropped" and "role "postgres" already exists" are expected. The `sed` is the one in Immich's restore guide. Then log in and open a few photos. The dump also restores the `postgres` user's password as it was when the dump was taken: if `vault_immich_db_password` changed since, the server cannot connect; set it again in Postgres (next section).
@@ -360,11 +360,11 @@ Everything is plain files: the configuration (`config/`) and the data (`data/`, 
 ```bash
 C="docker-svc compose -f /srv/docker/app/opencloud/compose.yml"; D=/srv/docker/app/opencloud
 $C stop
-sudo backup usb restore latest --target /tmp/restore --include $D/config --include $D/data
+sudo backup usb restore latest --target /srv/restore --include $D/config --include $D/data
 sudo rm -rf $D/config $D/data
-sudo cp -a /tmp/restore$D/config /tmp/restore$D/data $D/
+sudo cp -a /srv/restore$D/config /srv/restore$D/data $D/
 $C start
-sudo rm -rf /tmp/restore
+sudo rm -rf /srv/restore
 ```
 
 Then log in and open a few files. For a single lost file, use the trash or the file versions in the web interface first.
@@ -376,14 +376,15 @@ The documents (`media/`) and `data/` are restored as files; the database from it
 ```bash
 C="docker-svc compose -f /srv/docker/app/paperless/compose.yml"; D=/srv/docker/app/paperless
 $C down
-sudo backup usb restore latest --target /tmp/restore --include $D/media --include $D/data --include $D/dump
-sudo cp -a /tmp/restore$D/media/. $D/media/
-sudo cp -a /tmp/restore$D/data/. $D/data/
-sudo rm -rf $D/postgres && sudo install -d -o svc-docker -g svc-docker -m 0700 $D/postgres
+sudo backup usb restore latest --target /srv/restore --include $D/media --include $D/data --include $D/dump
+sudo cp -a /srv/restore$D/media/. $D/media/
+sudo cp -a /srv/restore$D/data/. $D/data/
+U=$(( $(awk -F: '$1=="svc-docker"{print $2}' /etc/subuid) + 998 )); G=$(( $(awk -F: '$1=="svc-docker"{print $2}' /etc/subgid) + 998 ))
+sudo rm -rf $D/postgres && sudo install -d -o $U -g $G -m 0700 $D/postgres   # the container's postgres user, as the role creates it
 $C create && docker-svc start paperless_db && sleep 15
-sudo zcat /tmp/restore$D/dump/paperless.sql.gz | docker-svc exec -i paperless_db psql --username=paperless --dbname=postgres
+sudo zcat /srv/restore$D/dump/paperless.sql.gz | docker-svc exec -i paperless_db psql --username=paperless --dbname=postgres
 $C up -d
-sudo rm -rf /tmp/restore
+sudo rm -rf /srv/restore
 ```
 
 "current user cannot be dropped" and "role "paperless" already exists" are expected. Then log in and open a few documents; if the search finds nothing, rebuild the index: `docker-svc exec paperless document_index reindex`.
@@ -394,12 +395,12 @@ Only its database matters: the monitors, the notification and the history. resti
 
 ```bash
 docker-svc stop uptime-kuma
-sudo backup usb restore latest --target /tmp/restore --include /srv/docker/app/uptime-kuma/dump
+sudo backup usb restore latest --target /srv/restore --include /srv/docker/app/uptime-kuma/dump
 D=/srv/docker/app/uptime-kuma
 sudo rm -f $D/data/kuma.db-wal $D/data/kuma.db-shm
-sudo cp -p /tmp/restore$D/dump/kuma.db $D/data/kuma.db
+sudo cp -p /srv/restore$D/dump/kuma.db $D/data/kuma.db
 docker-svc start uptime-kuma
-sudo rm -rf /tmp/restore
+sudo rm -rf /srv/restore
 ```
 
 ### Migrate the files from Nextcloud
@@ -682,19 +683,39 @@ With a single disk, replacing it means rebuilding the server:
 
 ### Rebuild the server
 
-This is also the yearly drill, on a lab VM.
+Everything needed is in the repository on GitHub and on the [emergency secrets key](#emergency-secrets-key).
 
-1. Install Debian 13 from netinst: admin user with the same name, empty root password, static IP on the management network, SSH server, guided partitioning with encrypted LVM (a new passphrase is fine).
-2. `ssh-copy-id` your key.
-3. Remove the old host key from your `known_hosts`, since the server has a new one: `ssh-keygen -R <management IP>`.
-4. `ansible-playbook site.yml --ask-vault-pass`.
+1. Install Debian 13 from netinst: admin user with the same name, empty root password, static IP on the management network, SSH server, encrypted LVM (a new passphrase is fine) with `/srv` as its own volume taking most of the disk (prod-srv-01: `/` 93 GB, `/var` 37 GB, the rest `/srv`).
+2. On the computer you run Ansible from: clone the repository, `ansible-galaxy collection install -r requirements.yml`, `git config core.hooksPath .githooks`, and copy `vault.yml` from the emergency key into `inventory/group_vars/prod_servers/`. If the laptop is gone, copy the SSH key from the emergency key with `install -m 600` (see [Lost or stolen laptop](#lost-or-stolen-laptop)).
+3. `ssh-copy-id <admin user>@<management IP>`, and remove the old host key, since the server has a new one: `ssh-keygen -R <management IP>`.
+4. `ansible-playbook site.yml --ask-vault-pass -K`. `-K` asks for the admin user's password: on a new install sudo still asks for it; the playbook then makes it passwordless, and later runs need no `-K`.
 5. `ansible-playbook site.yml --tags network --ask-vault-pass` to move to the VLANs (at the console: it reboots), then `--tags security`.
-6. Restore the applications' data, **only `/srv`**. Never restore `/etc` over the new system: `/etc/crypttab` and `/etc/fstab` name the old disk, and the server would not boot; the playbook has already rebuilt `/etc`. If you need an old file from `/etc`, restore it into `/tmp/restore` and copy it by hand.
-   - Every service except Immich and Vaultwarden: stop it, `sudo backup usb restore latest --target / --include /srv/docker/<system or app>/<name>` (or `s3` if the USB disk is lost too), start it.
-   - Vaultwarden and Immich: follow [Restore Vaultwarden](#restore-vaultwarden) and [Restore Immich](#restore-immich), which load the database from its dump.
+6. Restore the applications' data from the USB disk, or with `s3` in place of `usb` if it is lost too. **Only `/srv`**: never restore `/etc` over the new system: `/etc/crypttab` and `/etc/fstab` name the old disk, and the server would not boot; the playbook has already rebuilt `/etc`. If you need an old file from `/etc`, restore it into `/srv/restore` and copy it by hand.
+   - [Vaultwarden](#restore-vaultwarden), [Immich](#restore-immich), [OpenCloud](#restore-opencloud), [Paperless](#restore-paperless), [Uptime Kuma](#restore-uptime-kuma): follow their procedures. The databases come from their dumps, not from the files.
+   - Traefik: nothing to restore; it requests a new certificate at the first run.
    The playbook run in step 4 already wrote the credentials, so the restore needs only the vault.
 7. Check everything with `verify.md`.
 8. Note how long it took and what was missing from this guide, then update it.
+
+Time: a restore from R2 ran at about 7.5 MiB/s (14.6 GiB of Immich in 33 minutes, drill of 14 November 2026), so the 47 GB of `/srv` take about 1 h 45 min from R2. The USB disk is faster.
+
+#### Drill on a VM
+
+Once a year (see the calendar), from a fresh clone and the emergency key only, as if the laptop were gone too. The VM must not touch production:
+
+- In the drill's clone only (never commit), point `inventory/hosts.ini` at the VM, `dr-lab ansible_host=<VM IP> ansible_user=<admin user>`, and write `inventory/host_vars/dr-lab.yml`:
+  ```yaml
+  server_hostname: "dr-lab"            # the Telegram messages say dr-lab
+  ssh_listen_address: "<VM IP>"
+  services_address: "<VM IP>"
+  backup_s3_prefix: "prod-srv-01"      # read the production repository
+  backup_usb_enabled: false
+  ```
+  Outside VLAN 11 add `ntp_servers: ["<the VM's gateway>"]`.
+- Right after every playbook run: `sudo systemctl disable --now backup.timer`, or the VM writes its own backups into the production repository at night.
+- Skip step 5 (network). Give the VM 2 vCPU, 8 GB of RAM and 150 GB of disk.
+- Uptime Kuma on the VM sends real alerts without its host name: check `health.greyroom.net` before worrying about a "Down". Turn the VM off at the end of the day.
+- At the end, delete the VM and its disk (it holds the decrypted secrets), the drill's clone and the copied SSH key.
 
 ### Suspected compromise
 
