@@ -267,7 +267,7 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 3. `ansible-playbook site.yml --tags monitoring --ask-vault-pass` (the `notify` role runs as a dependency).
 4. `sudo notify-telegram "New token works"`.
 5. Update the `TELEGRAM_BOT_TOKEN` secret on GitHub (*Settings → Secrets and variables → Actions*), or Renovate's messages stop. Check with *Actions → Renovate → Run workflow*.
-6. Commit the encrypted vault.
+6. Copy `vault.yml` to the [emergency secrets key](#emergency-secrets-key).
 
 ### Change the vault password
 
@@ -275,7 +275,7 @@ The list is exclusive: a key you remove is deleted from the server. **Never remo
 ansible-vault rekey inventory/group_vars/prod_servers/vault.yml
 ```
 
-Then update the password on the [emergency secrets key](#emergency-secrets-key).
+Then update the password on the [emergency secrets key](#emergency-secrets-key) and copy the rekeyed `vault.yml` there.
 
 ### Change the scan schedule, the paths or the disk threshold
 
@@ -447,6 +447,7 @@ Renovate opens the PRs every Saturday; nothing changes on the server until you m
 2. Merge.
 3. `git pull`, then `ansible-playbook site.yml --tags update-containers --ask-vault-pass`.
 4. Check: `docker-svc ps` (all healthy) and the service's checks in `verify.md`.
+5. Remove the old images: `docker-svc image prune -a` (only images no container uses; `docker-svc system df` shows the space before). A rollback downloads the old image again, by the same digest.
 
 To roll back, revert the merge commit and run `--tags update-containers` again. Databases are the exception: an application that migrated its database on start may not run on the old version any more; restore the dump from before the update instead (see the restore procedures above).
 
@@ -648,6 +649,29 @@ Then:
 - firewall: `sudo nft flush ruleset` opens everything until the next reboot or run;
 - SSH: `sudo sshd -T` shows the effective configuration; `sudo journalctl -u ssh -n 50` shows why it refuses;
 - fix the cause in the repository and run the playbook again.
+
+### Lost or stolen laptop
+
+The laptop holds root access to the server: its SSH key is in `admin_ssh_keys` and the admin user has passwordless sudo. It also holds `vault.yml`, logged-in sessions (GitHub, Vaultwarden, OpenCloud) and its WireGuard key, which reaches the management network. What protects them:
+
+- the disk is encrypted with LUKS: safe if the laptop was **off**, not if it was on, suspended or unlocked;
+- the SSH key has a passphrase;
+- the vault password is never stored: it is typed at every run (`--ask-vault-pass`).
+
+Always, from another computer with the [emergency secrets key](#emergency-secrets-key):
+
+1. On OPNsense (*VPN → WireGuard*), disable the laptop's peer: from now on it cannot reach the server from outside. Create a peer for the new computer.
+2. Install Ansible, clone the repository, `git config core.hooksPath .githooks`, and copy `vault.yml` from the key into `inventory/group_vars/prod_servers/`.
+3. Copy the old key from the key with strict permissions (exFAT has none, and `ssh` refuses a readable key): `install -m 600 <key>/id_ed25519 ~/.ssh/old_laptop`.
+4. Create a new key with a passphrase: `ssh-keygen -t ed25519`. Add its `.pub` line to `admin_ssh_keys`, keeping the old one for now, and run `ansible-playbook site.yml --tags hardening --ask-vault-pass --private-key ~/.ssh/old_laptop`.
+5. Check that the new key logs in (`ssh <admin user>@<management IP>`). Remove the old line from `admin_ssh_keys`, run `--tags hardening` again (now with the new key), `rm ~/.ssh/old_laptop`, and open a PR with the inventory change.
+6. Replace `id_ed25519` and `id_ed25519.pub` on the emergency key with the new ones, and the passphrase in `RECOVERY.txt`.
+7. Close the laptop's sessions: GitHub (*Settings → Sessions*, *SSH and GPG keys*, *Applications* for the `gh` token), Vaultwarden (*Deauthorize sessions* in the account settings), OpenCloud (the desktop client's session) and any other account used on it.
+
+If the laptop was on or unlocked, or the vault password may have been seen:
+
+8. Treat the server as possibly compromised for the time the laptop was out of your hands: read the SSH log (`journalctl -u ssh`) for logins you did not make, and if there are any follow [Suspected compromise](#suspected-compromise).
+9. Rotate the secrets in `vault.yml` (the list in [Suspected compromise](#suspected-compromise), step 4), then [change the vault password](#change-the-vault-password). A rekey alone is not enough: the old copy of `vault.yml` still opens with the old password.
 
 ### Replace the disk
 
