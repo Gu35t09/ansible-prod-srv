@@ -21,7 +21,7 @@ admin_ssh_keys:
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOLPkoGZUGiYdOW2noZwBttL+WMKoP72KuE2bAm6eNMM mattia.vallortigara@newcomm.it"
 
 # --- Addresses ----------------------------------------------------------------
-# Management address: SSH, Ansible, Semaphore.
+# Management address: SSH and Ansible.
 mgmt_address: "{{ ansible_host }}"
 # Services address: Traefik publishes its ports only here.
 # Leave empty until the network role has created the services VLAN.
