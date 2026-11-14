@@ -19,6 +19,11 @@ admin_user: "v"
 admin_ssh_keys:
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAn6fwLJzRJjFsKK5LVGNTIxrYa9yCg10XO0rQL9JIuw mattia@nixos"
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOLPkoGZUGiYdOW2noZwBttL+WMKoP72KuE2bAm6eNMM mattia.vallortigara@newcomm.it"
+  # YubiKey 5 NFC: the private key never leaves it; PIN and touch at every
+  # connection (maintenance guide, "SSH with the YubiKey").
+  - "sk-ssh-ed25519@openssh.com
+    AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIJFrSFLPklw9zW2dZK0QNCX4TPCPeCFxCPokumO6LPN7AAAAD3NzaDpwcm9kLXNydi0wMQ==
+    Mattia Yubikey 1"
 
 # --- Addresses ----------------------------------------------------------------
 # Management address: SSH and Ansible.
