@@ -1040,7 +1040,7 @@ One line, `ghcr.io/renovatebot/renovate:44`. The major tag, not a pinned version
 - **Token**: the job's own `GITHUB_TOKEN`, with the permissions listed in the workflow (contents, pull requests, issues, statuses: write; statuses is for the `renovate/stability-days` check that `minimumReleaseAge` sets on each branch, and without it Renovate stops after creating the first branch). It is created for the run and expires with it; there is no personal token to store or renew. The repository must allow Actions to create pull requests (README, "Image updates").
 - **Telegram**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets. Secrets are not given to workflows started from forks.
 - **60 days without activity**: in a public repository GitHub disables scheduled workflows after 60 days with no commits, and says so by e-mail. Merging Renovate's PRs counts as activity; if it happens, re-enable the workflow under *Actions → Renovate*.
-- **The runner image** (`runs-on: ubuntu-24.04`) is the only version left in the workflow file. A `GITHUB_TOKEN` cannot edit workflow files, so Renovate lists a new major under Pending Approval and the change is made by hand, about every two years.
+- **The runner image** (`runs-on: ubuntu-26.04`) is the only version left in the workflow file. A `GITHUB_TOKEN` cannot edit workflow files, so Renovate lists a new major under Pending Approval and the change is made by hand, about every two years.
 
 **`renovate.json`**
 
