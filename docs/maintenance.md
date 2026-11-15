@@ -311,7 +311,9 @@ Each failed attempt makes sshd hold back the next connection from the same addre
 3. `ansible-playbook site.yml --tags monitoring --ask-vault-pass` (the `notify` role runs as a dependency).
 4. `sudo notify-telegram "New token works"`.
 5. Update the `TELEGRAM_BOT_TOKEN` secret on GitHub (*Settings → Secrets and variables → Actions*), or Renovate's messages stop. Check with *Actions → Renovate → Run workflow*.
-6. Copy `vault.yml` to the [emergency secrets key](#emergency-secrets-key).
+6. Uptime Kuma uses the same bot: *Settings → Notifications*, edit the Telegram notification, paste the new token, *Test*.
+7. The laptop uses the same bot too. As `v-admin` on the laptop, in ansible-prod-notebook: `ansible-vault edit inventory/group_vars/laptops/vault.yml`, replace `vault_telegram_bot_token`, then `ansible-playbook site.yml -K --ask-vault-pass --tags base` and `sudo notify-telegram "New token works"`.
+8. Copy both vaults to the [emergency secrets key](#emergency-secrets-key) (`vault.yml` and `laptop-vault.yml`).
 
 ### Change the vault password
 
@@ -675,6 +677,7 @@ What is on it, in one text file `RECOVERY.txt` (plus the files named):
 | Vaultwarden master password, and `vaultwarden-export.json` (Vaultwarden's password-protected export) with its password | Every other account, including the 2FA recovery codes kept in Vaultwarden |
 | The file SSH key (`id_ed25519`, with its passphrase) | Log in and run the playbook from another computer, also without the YubiKey |
 | The OPNsense configuration (*System → Configuration → Backups*) | Rebuild the firewall |
+| For the laptop ([ansible-prod-notebook](https://github.com/Gu35t09/ansible-prod-notebook)): the LUKS passphrase of its disk, the password of its admin user `v-admin`, and `laptop-vault.yml`, a copy of its `inventory/group_vars/laptops/vault.yml` (encrypted; its vault password too, if it differs from this one) | Boot and administer the laptop, and restore its notifications (Telegram, Uptime Kuma push tokens). Its vault is never committed either: that repository is public. The password of its everyday user `v` is not needed: `v-admin` resets it |
 | The steps: "clone the repositories, see [Rebuild the server](#rebuild-the-server)" | Where to start |
 
 Not on it: tokens that can be regenerated at the provider (Telegram bot, Cloudflare, R2 access keys).
@@ -684,10 +687,10 @@ Not on it: tokens that can be regenerated at the provider (Telegram bot, Cloudfl
 **Check it every three months**:
 
 1. Unlock it: the PIN still works and the battery holds a charge.
-2. On the laptop, `cmp <key>/vault.yml inventory/group_vars/prod_servers/vault.yml` prints nothing (the copy is current; if not, copy it again), then `ansible-vault view <key>/vault.yml` with the vault password from the key: it opens, and `vault_restic_password` matches the one on the key.
+2. On the laptop, as `v-admin`, `cmp <key>/vault.yml inventory/group_vars/prod_servers/vault.yml` prints nothing (the copy is current; if not, copy it again), then `ansible-vault view <key>/vault.yml` with the vault password from the key: it opens, and `vault_restic_password` matches the one on the key. The same `cmp` for the laptop's vault: `cmp <key>/laptop-vault.yml ~/Documents/ansible-prod-notebook/inventory/group_vars/laptops/vault.yml`.
 3. Replace `vaultwarden-export.json` with a fresh export (web vault: *Tools → Export vault*, format *.json (Encrypted)*, password-protected).
 
-**Update it** whenever one of these secrets changes (any edit of `vault.yml`, a vault rekey, a new restic password, a new LUKS passphrase).
+**Update it** whenever one of these secrets changes (any edit of either `vault.yml`, a vault rekey, a new restic password, a new LUKS passphrase of the server or the laptop, a new password of `v-admin`).
 
 **If it is lost**: the data cannot be read without the PIN, and the key erases itself after too many wrong attempts. Prepare a new one from the laptop and the server; there is nothing to rotate, unless the PIN may have been seen.
 
@@ -703,26 +706,39 @@ Then:
 
 ### Lost or stolen laptop
 
-The laptop holds root access to the server: its SSH key is in `admin_ssh_keys` and the admin user has passwordless sudo. It also holds `vault.yml`, logged-in sessions (GitHub, Vaultwarden, OpenCloud) and its WireGuard key, which reaches the management network. What protects them:
+The laptop is configured by [ansible-prod-notebook](https://github.com/Gu35t09/ansible-prod-notebook) and has two users:
+
+- **`v`**, the everyday user, with no sudo: the browser, Claude Code, the GitHub session used for branches and pull requests, the Vaultwarden and OpenCloud sessions. No SSH configuration for the server, no vault.
+- **`v-admin`**, in sudo: the SSH configuration for this server (with the reference to the key on the YubiKey, useless without it), the clone of this repository with `vault.yml`, and the laptop's own `vault.yml`.
+- **root** holds the Telegram bot token in `/etc/homelab/notify.env`: the laptop sends its own notifications with the same bot as the server.
+
+What protects them:
 
 - the disk is encrypted with LUKS: safe if the laptop was **off**, not if it was on, suspended or unlocked;
-- the SSH key has a passphrase; with the [YubiKey](#ssh-with-the-yubikey) and no file key left on the laptop, the laptop alone cannot log in at all, and steps 3–6 below are not needed (steps 2 and 7 still are);
-- the vault password is never stored: it is typed at every run (`--ask-vault-pass`).
+- the SSH key is on the [YubiKey](#ssh-with-the-yubikey), which stays with you: the laptop alone cannot log in to the server, and there is no SSH key to replace. The file key is only on the emergency secrets key;
+- the vault passwords are never stored: they are typed at every run (`--ask-vault-pass`).
 
 Always, from another computer with the [emergency secrets key](#emergency-secrets-key):
 
-1. On OPNsense (*VPN → WireGuard*), disable the laptop's peer: from now on it cannot reach the server from outside. Create a peer for the new computer.
-2. Install Ansible, clone the repository, `git config core.hooksPath .githooks`, and copy `vault.yml` from the key into `inventory/group_vars/prod_servers/`.
-3. Copy the old key from the key with strict permissions (exFAT has none, and `ssh` refuses a readable key): `install -m 600 <key>/id_ed25519 ~/.ssh/old_laptop`.
-4. Create a new key with a passphrase: `ssh-keygen -t ed25519`. Add its `.pub` line to `admin_ssh_keys`, keeping the old one for now, and run `ansible-playbook site.yml --tags hardening --ask-vault-pass --private-key ~/.ssh/old_laptop`.
-5. Check that the new key logs in (`ssh <admin user>@<management IP>`). Remove the old line from `admin_ssh_keys`, run `--tags hardening` again (now with the new key), `rm ~/.ssh/old_laptop`, and open a PR with the inventory change.
-6. Replace `id_ed25519` and `id_ed25519.pub` on the emergency key with the new ones, and the passphrase in `RECOVERY.txt`.
-7. Close the laptop's sessions: GitHub (*Settings → Sessions*, *SSH and GPG keys*, *Applications* for the `gh` token), Vaultwarden (*Deauthorize sessions* in the account settings), OpenCloud (the desktop client's session) and any other account used on it.
+1. [Rotate the Telegram token](#rotate-the-telegram-token): it was on the laptop, and the server and Uptime Kuma use the same bot.
+2. In Uptime Kuma, delete the laptop's push monitors ("Laptop: …"): their tokens were on the laptop. They only let someone mark those monitors green or red.
+3. Close the sessions of `v`: GitHub (*Settings → Sessions*, *SSH and GPG keys*, *Applications* for the `gh` token, and the tokens of the account that opens the pull requests), claude.ai, Vaultwarden (*Deauthorize sessions* in the account settings), OpenCloud (the desktop client's session) and any other account used on it.
+4. If the laptop had a WireGuard peer on OPNsense (*VPN → WireGuard*), disable it.
 
-If the laptop was on or unlocked, or the vault password may have been seen:
+Only if a file SSH key was on the laptop (a setup from before the YubiKey):
 
-8. Treat the server as possibly compromised for the time the laptop was out of your hands: read the SSH log (`journalctl -u ssh`) for logins you did not make, and if there are any follow [Suspected compromise](#suspected-compromise).
-9. Rotate the secrets in `vault.yml` (the list in [Suspected compromise](#suspected-compromise), step 4), then [change the vault password](#change-the-vault-password). A rekey alone is not enough: the old copy of `vault.yml` still opens with the old password.
+5. Install Ansible, clone the repository, `git config core.hooksPath .githooks`, and copy `vault.yml` from the key into `inventory/group_vars/prod_servers/`.
+6. Copy the old key from the key with strict permissions (exFAT has none, and `ssh` refuses a readable key): `install -m 600 <key>/id_ed25519 ~/.ssh/old_laptop`.
+7. Create a new key with a passphrase: `ssh-keygen -t ed25519`. Add its `.pub` line to `admin_ssh_keys`, keeping the old one for now, and run `ansible-playbook site.yml --tags hardening --ask-vault-pass --private-key ~/.ssh/old_laptop`.
+8. Check that the new key logs in (`ssh <admin user>@<management IP>`). Remove the old line from `admin_ssh_keys`, run `--tags hardening` again (now with the new key), `rm ~/.ssh/old_laptop`, and open a PR with the inventory change.
+9. Replace `id_ed25519` and `id_ed25519.pub` on the emergency key with the new ones, and the passphrase in `RECOVERY.txt`.
+
+If the laptop was on or unlocked, or a vault password may have been seen:
+
+10. Treat the server as possibly compromised for the time the laptop was out of your hands: read the SSH log (`journalctl -u ssh`) for logins you did not make, and if there are any follow [Suspected compromise](#suspected-compromise).
+11. Rotate the secrets in `vault.yml` (the list in [Suspected compromise](#suspected-compromise), step 4), then [change the vault password](#change-the-vault-password). A rekey alone is not enough: the old copy of `vault.yml` still opens with the old password. The laptop's vault holds only the Telegram token (rotated in step 1) and the push tokens (step 2): rekey it with a new password.
+
+The replacement laptop is set up from ansible-prod-notebook's README ("First setup"), with its vault from `laptop-vault.yml` on the emergency key, and SSH with the YubiKey as in its maintenance guide ("SSH to production").
 
 ### Lost YubiKey
 

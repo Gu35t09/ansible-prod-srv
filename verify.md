@@ -87,10 +87,10 @@ systemctl is-active clamav-daemon clamav-freshclam
 systemctl list-timers clamav-scan.timer
 ```
 
-Test with the EICAR file, harmless and detected by every antivirus:
+Test with the EICAR file, harmless and detected by every antivirus. The string is split in two here, so that this file does not match the scanners: the laptop scans its clone of this repository every day (ansible-prod-notebook, roles clamav and yara).
 
 ```bash
-echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > ~/eicar.com
+printf '%s%s\n' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR' '-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > ~/eicar.com
 sudo systemctl start clamav-scan.service
 sudo cat "$(sudo ls -t /var/log/clamav/scan_*.log | head -n 1)"
 ```
@@ -148,7 +148,7 @@ systemctl list-timers yara-scan.timer
 Test with the EICAR file (the Elastic rules include it):
 
 ```bash
-echo 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
+printf '%s%s\n' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR' '-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
 sudo systemctl start yara-scan.service
 sudo sh -c 'cat "$(ls -t /var/log/yara/scan_*.log | head -n 1)"' | grep -v '^error scanning'
 rm -f /tmp/eicar.com
