@@ -2,7 +2,7 @@
 # Pinned by tag and digest: an update is a change in this file (Renovate),
 # applied with --tags update-containers. The slim-rootless image: no
 # Chromium or embedded MariaDB, runs as its own user (node, UID 1000).
-uptime_kuma_image: "docker.io/louislam/uptime-kuma:2.5.9-slim-rootless@sha256:053a48927ee714b1da78c6810041a44a266bd8c06dc30ead5b3f459d0f219fb0"
+uptime_kuma_image: "docker.io/louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc"
 
 docker_user: "svc-docker"
 uptime_kuma_dir: /srv/docker/app/uptime-kuma
