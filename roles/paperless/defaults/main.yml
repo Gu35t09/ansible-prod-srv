@@ -3,8 +3,8 @@
 # applied with --tags update-containers. Postgres and Valkey follow the
 # versions of Paperless's own docker-compose.postgres.yml.
 paperless_image: "ghcr.io/paperless-ngx/paperless-ngx:3.5.1@sha256:8508853b8a0f8394074260957d0be186c8c64f346973b24a7583de4580f306b9"
-paperless_postgres_image: "docker.io/library/postgres:18.7@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a"
-paperless_valkey_image: "docker.io/valkey/valkey:9.1.4@sha256:3ab0eca823ebbf0fe352476ebac330ac9e5f14b592b9a954eab296d341e81b0e"
+paperless_postgres_image: "docker.io/library/postgres:18.7@sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328"
+paperless_valkey_image: "docker.io/valkey/valkey:9.2.0@sha256:1c2b25b09f354c66fe994733acdf12fcfd4bdf6f3bd92b88a93a70378d884056"
 
 docker_user: "svc-docker"
 paperless_dir: /srv/docker/app/paperless
